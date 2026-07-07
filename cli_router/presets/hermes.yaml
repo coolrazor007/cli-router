@@ -1,0 +1,9 @@
+tools:
+  hermes-coder:
+    type: hermes
+    command:
+      - hermes
+      - run
+      - "{prompt}"
+    output:
+      format: text

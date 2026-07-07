@@ -1,0 +1,38 @@
+from cli_router.failures import classify_failure, stage_failure_message
+from cli_router.runner import ToolRunResult
+
+
+def test_classifies_usage_limit_from_stderr():
+    result = ToolRunResult(["claude"], 1, "", "Claude AI usage limit reached|12345")
+
+    assert classify_failure(result) == "usage_limit"
+    assert "usage limit" in stage_failure_message("planner", result).lower()
+
+
+def test_classifies_claude_session_limit_from_stdout():
+    result = ToolRunResult(["claude"], 1, "You've hit your session limit · resets 2:30pm", "")
+
+    assert classify_failure(result) == "usage_limit"
+
+
+def test_classifies_nonzero_failure_as_command_failed():
+    result = ToolRunResult(["tool"], 2, "", "bad")
+
+    assert classify_failure(result) == "command_failed"
+
+
+def test_classifies_timeout():
+    result = ToolRunResult(["tool"], 124, "", "Command timed out after 1 seconds")
+
+    assert classify_failure(result) == "timeout"
+
+
+def test_classifies_unsupported_model():
+    result = ToolRunResult(
+        ["codex"],
+        1,
+        "",
+        "The 'gpt-5' model is not supported when using Codex with a ChatGPT account.",
+    )
+
+    assert classify_failure(result) == "unsupported_model"

@@ -1,0 +1,43 @@
+version: 1
+
+defaults:
+  plan_file: PLAN.md
+  run_dir: .cli-router/runs
+  stop_on_failure: true
+
+tools:
+  local-planner:
+    type: generic
+    command:
+      - llm
+      - -m
+      - local-planner
+      - "{prompt}"
+    output:
+      format: text
+
+  local-coder:
+    type: generic
+    command:
+      - llm
+      - -m
+      - local-coder
+      - "{prompt}"
+    output:
+      format: text
+
+workflows:
+  default:
+    stages:
+      - id: planner
+        tool: local-planner
+        input_template: |
+          Plan this change:
+          {user_prompt}
+        output_file: PLAN.md
+
+      - id: coder
+        tool: local-coder
+        input_template: |
+          Implement {plan_path} for:
+          {user_prompt}

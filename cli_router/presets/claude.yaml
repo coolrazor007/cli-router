@@ -1,0 +1,14 @@
+tools:
+  claude-planner:
+    type: claude
+    command:
+      - claude
+      - -p
+      - --permission-mode
+      - plan
+      - --output-format
+      - json
+      - "{prompt}"
+    output:
+      format: json
+      extract: result

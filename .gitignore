@@ -209,6 +209,12 @@ tempCodeRunnerFile.py
 # PyPI configuration file
 .pypirc
 
+# CLI-Router local config and run artifacts
+/cli-router.yaml
+/.cli-router.yaml
+/PLAN.md
+/.cli-router/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

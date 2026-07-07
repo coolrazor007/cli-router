@@ -1,0 +1,9 @@
+tools:
+  codex-coder:
+    type: codex
+    command:
+      - codex
+      - exec
+      - "{prompt}"
+    output:
+      format: text

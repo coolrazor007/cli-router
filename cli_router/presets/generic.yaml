@@ -1,0 +1,60 @@
+version: 1
+
+defaults:
+  plan_file: PLAN.md
+  run_dir: .cli-router/runs
+  stop_on_failure: true
+
+tools:
+  generic-planner:
+    type: generic
+    command:
+      - python
+      - -c
+      - "import sys; print(sys.argv[1])"
+      - "{prompt}"
+    output:
+      format: text
+
+  generic-coder:
+    type: generic
+    command:
+      - python
+      - -c
+      - "import sys; print(sys.argv[1])"
+      - "{prompt}"
+    output:
+      format: text
+
+workflows:
+  default:
+    stages:
+      - id: planner
+        tool: generic-planner
+        input_template: |
+          You are the planning model for a coding-agent handoff.
+
+          User request:
+          {user_prompt}
+
+          Inspect this repository and produce a concrete implementation plan.
+
+          Do not edit files.
+
+          Write the plan in Markdown.
+        output_file: PLAN.md
+
+      - id: coder
+        tool: generic-coder
+        input_template: |
+          Please implement the plan in {plan_path}.
+
+          Original user request:
+          {user_prompt}
+
+          Rules:
+          - Read the plan first.
+          - Follow it closely.
+          - Make the smallest safe changes.
+          - Run relevant tests.
+          - Report any deviations.

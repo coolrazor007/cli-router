@@ -1,0 +1,73 @@
+version: 1
+
+defaults:
+  plan_file: PLAN.md
+  run_dir: .cli-router/runs
+  stop_on_failure: true
+
+tools:
+  claude-planner:
+    type: claude
+    command:
+      - claude
+      - -p
+      - --permission-mode
+      - plan
+      - --output-format
+      - json
+      - "{prompt}"
+    output:
+      format: json
+      extract: result
+
+  codex-coder:
+    type: codex
+    command:
+      - codex
+      - --ask-for-approval
+      - never
+      - exec
+      - --skip-git-repo-check
+      - --ephemeral
+      - "{prompt}"
+    output:
+      format: text
+
+  codex-planner:
+    type: codex
+    command:
+      - codex
+      - --ask-for-approval
+      - never
+      - exec
+      - --skip-git-repo-check
+      - --ephemeral
+      - "{prompt}"
+    output:
+      format: text
+
+workflows:
+  default:
+    stages:
+      - id: planner
+        tool: claude-planner
+        fallback_tools:
+          - codex-planner
+        input_template: |
+          You are the planning model for a coding-agent handoff.
+
+          User request:
+          {user_prompt}
+
+          Inspect this repository and produce a concrete implementation plan.
+          Do not edit files.
+          Write the plan in Markdown.
+        output_file: PLAN.md
+
+      - id: coder
+        tool: codex-coder
+        input_template: |
+          Please implement the plan in {plan_path}.
+
+          Original user request:
+          {user_prompt}
