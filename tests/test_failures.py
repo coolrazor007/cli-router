@@ -36,3 +36,20 @@ def test_classifies_unsupported_model():
     )
 
     assert classify_failure(result) == "unsupported_model"
+
+
+def test_stage_message_uses_precomputed_failure_kind():
+    result = ToolRunResult(["claude"], 1, "", "boom")
+
+    # A precomputed kind is trusted, so the caller's single classification is reused.
+    message = stage_failure_message("planner", result, failure_kind="usage_limit")
+
+    assert "usage limit" in message.lower()
+
+
+def test_classifies_auth_required_from_provider_output():
+    result = ToolRunResult(["claude"], 1, "Not logged in · Please run /login\n", "")
+
+    assert classify_failure(result) == "auth_required"
+    assert "authentication" in stage_failure_message("planner", result).lower()
+    assert "Not logged in" in stage_failure_message("planner", result)

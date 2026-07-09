@@ -1,4 +1,5 @@
 import sys
+import json
 from pathlib import Path
 
 import yaml
@@ -70,6 +71,135 @@ def test_run_workflow_runs_planner_then_coder(tmp_path, monkeypatch):
     assert "coded:implement PLAN.md: add logging" in summary.stages[1].result.stdout
 
 
+def test_run_workflow_records_diagnostics_and_metrics(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    write_config(tmp_path, "import json; print(json.dumps({'result': 'the plan'}))")
+    config = load_config()
+    config.defaults["log_dir"] = str(tmp_path / "home" / ".cli-router" / "logs")
+
+    summary = run_workflow(config, "add logging")
+
+    assert summary.started_at
+    assert summary.finished_at
+    assert summary.duration_seconds >= 0
+    assert summary.stages[0].started_at
+    assert summary.stages[0].attempt == 1
+    assert summary.stages[0].duration_seconds >= summary.stages[0].result.duration_seconds
+
+    manifest = yaml.safe_load((summary.run_dir / "run.yaml").read_text(encoding="utf-8"))
+    assert manifest["started_at"] == summary.started_at
+    assert manifest["finished_at"] == summary.finished_at
+    assert manifest["duration_seconds"] == summary.duration_seconds
+    assert manifest["metrics"]["run_id"] == summary.run_dir.name
+    assert manifest["metrics"]["workflow"] == "default"
+    assert manifest["metrics"]["stage_count"] == 2
+    assert manifest["metrics"]["retry_count"] == 0
+    assert manifest["metrics"]["stages"][0]["stage_id"] == "planner"
+    assert manifest["metrics"]["stages"][0]["duration_seconds"] >= 0
+    assert manifest["metrics"]["stages"][0]["subprocess_seconds"] >= 0
+    assert manifest["metrics"]["stages"][0]["stdout_bytes"] > 0
+
+    log_dir = tmp_path / "home" / ".cli-router" / "logs"
+    log_text = (log_dir / "cli-router.log").read_text(encoding="utf-8")
+    assert "workflow_started" in log_text
+    assert "stage_finished" in log_text
+    metric_lines = (log_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
+    assert json.loads(metric_lines[-1])["run_id"] == summary.run_dir.name
+
+
+def test_run_workflow_does_not_expand_placeholder_tokens_in_user_prompt(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    write_config(tmp_path, "import json; print(json.dumps({'result': 'the plan'}))")
+
+    summary = run_workflow(load_config(), "add {plan_path} support")
+
+    assert summary.exit_code == 0
+    assert "coded:implement PLAN.md: add {plan_path} support" in summary.stages[1].result.stdout
+
+
+def test_run_workflow_runs_enabled_stages_in_configured_order(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    data = {
+        "version": 1,
+        "defaults": {
+            "plan_file": "PLAN.md",
+            "run_dir": ".cli-router/runs",
+            "stop_on_failure": True,
+        },
+        "tools": {
+            "planner": {
+                "command": [sys.executable, "-c", "import json; print(json.dumps({'result': 'the plan'}))"],
+                "output": {"format": "json", "extract": "result"},
+            },
+            "reviewer": {
+                "command": [sys.executable, "-c", "import sys; print('review:' + sys.argv[1])", "{prompt}"],
+                "output": {"format": "text"},
+            },
+            "disabled-check": {
+                "command": [sys.executable, "-c", "print('should not run')"],
+                "output": {"format": "text"},
+            },
+            "coder": {
+                "command": [sys.executable, "-c", "import sys; print('coded:' + sys.argv[1])", "{prompt}"],
+                "output": {"format": "text"},
+            },
+        },
+        "workflows": {
+            "default": {
+                "stages": [
+                    {"id": "planner", "tool": "planner", "input_template": "plan {user_prompt}", "output_file": "PLAN.md"},
+                    {"id": "review", "tool": "reviewer", "input_template": "review {plan_path}: {user_prompt}"},
+                    {"id": "disabled-check", "tool": "disabled-check", "enabled": False},
+                    {"id": "coder", "tool": "coder", "input_template": "code {plan_path}: {user_prompt}"},
+                ]
+            }
+        },
+    }
+    Path("cli-router.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    summary = run_workflow(load_config(), "add logging")
+
+    assert summary.exit_code == 0
+    assert [stage.stage_id for stage in summary.stages] == ["planner", "review", "coder"]
+    assert (summary.run_dir / "review.stdout").read_text(encoding="utf-8") == "review:review PLAN.md: add logging\n"
+    assert not (summary.run_dir / "disabled-check.stdout").exists()
+
+
+def test_run_workflow_can_select_and_order_stages(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    data = {
+        "version": 1,
+        "defaults": {
+            "plan_file": "PLAN.md",
+            "run_dir": ".cli-router/runs",
+            "stop_on_failure": True,
+        },
+        "tools": {
+            "alpha": {"command": [sys.executable, "-c", "print('alpha')"], "output": {"format": "text"}},
+            "beta": {"command": [sys.executable, "-c", "print('beta')"], "output": {"format": "text"}},
+            "gamma": {"command": [sys.executable, "-c", "print('gamma')"], "output": {"format": "text"}},
+        },
+        "workflows": {
+            "default": {
+                "stages": [
+                    {"id": "alpha", "tool": "alpha"},
+                    {"id": "beta", "tool": "beta", "enabled": False},
+                    {"id": "gamma", "tool": "gamma"},
+                ]
+            }
+        },
+    }
+    Path("cli-router.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    summary = run_workflow(load_config(), "ignored", "default", stage_names=["gamma", "beta"])
+
+    assert summary.exit_code == 0
+    assert [stage.stage_id for stage in summary.stages] == ["gamma", "beta"]
+    assert (summary.run_dir / "gamma.stdout").read_text(encoding="utf-8") == "gamma\n"
+    assert (summary.run_dir / "beta.stdout").read_text(encoding="utf-8") == "beta\n"
+    assert not (summary.run_dir / "alpha.stdout").exists()
+
+
 def test_implement_workflow_fails_when_plan_is_missing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     write_config(tmp_path, "import json; print(json.dumps({'result': 'the plan'}))")
@@ -88,6 +218,18 @@ def test_run_workflow_stops_before_coder_on_planner_failure(tmp_path, monkeypatc
 
     assert summary.exit_code == 5
     assert [stage.stage_id for stage in summary.stages] == ["planner"]
+
+
+def test_run_workflow_surfaces_auth_required_provider_message(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    write_config(tmp_path, "import sys; print('Not logged in · Please run /login'); sys.exit(1)")
+
+    summary = run_workflow(load_config(), "add logging")
+
+    assert summary.exit_code == 1
+    assert summary.stages[0].failure_kind == "auth_required"
+    assert "authentication" in summary.error.lower()
+    assert "Not logged in" in summary.error
 
 
 def test_run_workflow_uses_stage_fallback_tool_after_usage_limit(tmp_path, monkeypatch):
@@ -153,3 +295,28 @@ def test_run_workflow_uses_stage_fallback_tool_after_usage_limit(tmp_path, monke
     ]
     assert (summary.run_dir / "planner.stderr").read_text(encoding="utf-8") == "Claude usage limit reached\n"
     assert (summary.run_dir / "planner.codex-planner.extracted.md").read_text(encoding="utf-8") == "fallback plan"
+
+
+def test_run_workflow_observer_receives_stage_events_in_order(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    write_config(tmp_path, "import json; print(json.dumps({'result': 'the plan'}), flush=True)")
+    events = []
+
+    class RecordingObserver:
+        def stage_started(self, stage_id, tool, attempt):
+            events.append(("started", stage_id, tool, attempt))
+
+        def stage_output(self, stage_id, tool, line):
+            events.append(("output", stage_id, tool, line))
+
+        def stage_finished(self, stage):
+            events.append(("finished", stage.stage_id, stage.tool, stage.result.returncode))
+
+    summary = run_workflow(load_config(), "add logging", observer=RecordingObserver())
+
+    assert summary.exit_code == 0
+    assert events[0] == ("started", "planner", "planner", 1)
+    assert events[1][0:3] == ("output", "planner", "planner")
+    assert events[2] == ("finished", "planner", "planner", 0)
+    assert events[3] == ("started", "coder", "coder", 1)
+    assert events[-1] == ("finished", "coder", "coder", 0)

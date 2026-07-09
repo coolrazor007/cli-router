@@ -4,6 +4,9 @@ defaults:
   plan_file: PLAN.md
   run_dir: .cli-router/runs
   stop_on_failure: true
+  tui_verbosity: condensed
+  log_dir: ~/.cli-router/logs
+  log_level: INFO
 
 tools:
   generic-planner:

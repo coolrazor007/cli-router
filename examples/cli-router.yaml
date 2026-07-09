@@ -4,6 +4,7 @@ defaults:
   plan_file: PLAN.md
   run_dir: .cli-router/runs
   stop_on_failure: true
+  tui_verbosity: condensed
 
 tools:
   planner:
@@ -26,6 +27,16 @@ tools:
     output:
       format: text
 
+  reviewer:
+    type: generic
+    command:
+      - python
+      - -c
+      - "import sys; print('Review: ' + sys.argv[1])"
+      - "{prompt}"
+    output:
+      format: text
+
 workflows:
   default:
     stages:
@@ -40,6 +51,15 @@ workflows:
         tool: coder
         input_template: |
           Implement {plan_path}.
+
+          Original request:
+          {user_prompt}
+
+      - id: review
+        tool: reviewer
+        enabled: false
+        input_template: |
+          Review the result against {plan_path}.
 
           Original request:
           {user_prompt}

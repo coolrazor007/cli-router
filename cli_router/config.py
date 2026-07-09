@@ -33,11 +33,17 @@ class RouterConfig:
         return self.data.setdefault("workflows", {})
 
 
-CONFIG_CANDIDATES = (
-    Path("cli-router.yaml"),
-    Path(".cli-router.yaml"),
-    Path.home() / ".config" / "cli-router" / "config.yaml",
-)
+def user_config_path() -> Path:
+    return Path.home() / ".cli-router" / "config.yaml"
+
+
+def config_candidates() -> tuple[Path, ...]:
+    return (
+        Path("cli-router.yaml"),
+        Path(".cli-router.yaml"),
+        user_config_path(),
+        Path.home() / ".config" / "cli-router" / "config.yaml",
+    )
 
 
 def load_config(path: str | Path | None = None) -> RouterConfig:
@@ -57,8 +63,15 @@ def config_to_yaml(config: RouterConfig) -> str:
     return yaml.safe_dump(config.data, sort_keys=False)
 
 
+def save_config(config: RouterConfig, path: str | Path | None = None) -> Path:
+    target = Path(path) if path else user_config_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(config_to_yaml(config), encoding="utf-8")
+    return target
+
+
 def _find_config() -> Path | None:
-    for candidate in CONFIG_CANDIDATES:
+    for candidate in config_candidates():
         if candidate.exists():
             return candidate.resolve()
     return None
@@ -114,11 +127,16 @@ def _validate_config(data: dict[str, Any], source: Path | None) -> None:
         stages = workflow.get("stages", [])
         if not isinstance(stages, list):
             raise ConfigError(f"workflow {name!r} stages must be a list")
+        stage_ids: set[str] = set()
         for stage in stages:
             if not isinstance(stage, dict):
                 raise ConfigError(f"workflow {name!r} stage must be a mapping")
             if "id" not in stage or "tool" not in stage:
                 raise ConfigError(f"workflow {name!r} stage is missing id or tool")
+            stage_id = str(stage["id"])
+            if stage_id in stage_ids:
+                raise ConfigError(f"workflow {name!r} has duplicate stage id {stage_id!r}")
+            stage_ids.add(stage_id)
             if stage["tool"] not in data.get("tools", {}):
                 raise ConfigError(f"workflow {name!r} references unknown tool {stage['tool']!r}")
             fallback_tools = stage.get("fallback_tools", [])
