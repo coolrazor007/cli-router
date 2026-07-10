@@ -29,6 +29,63 @@ tools:
     output:
       format: text
 
+stage_library:
+  - id: planner
+    tool: generic-planner
+    input_template: |
+      You are the planning model for a coding-agent handoff.
+
+      User request:
+      {user_prompt}
+
+      Inspect this repository and produce a concrete implementation plan.
+
+      Do not edit any files. Respond only with a detailed implementation plan in Markdown.
+    output_file: PLAN.md
+
+  - id: coder
+    tool: generic-coder
+    input_template: |
+      Please implement the plan in {plan_path}.
+
+      Original user request:
+      {user_prompt}
+
+      Rules:
+      - Read the plan first.
+      - Follow it closely.
+      - Make the smallest safe changes.
+      - Run relevant tests.
+      - Report any deviations.
+
+  - id: qa
+    tool: generic-coder
+    input_template: |
+      Review the previous stage's work and report defects, missing tests, and risky assumptions.
+
+      Previous stage output:
+      {previous_output}
+
+      Plan file (for reference): {plan_path}
+
+      Original user request:
+      {user_prompt}
+
+      Do not edit any files. Respond only in Markdown.
+
+  - id: summary
+    tool: generic-coder
+    input_template: |
+      Summarize the completed workflow for the user.
+
+      Original user request:
+      {user_prompt}
+
+      All stage outputs so far:
+      {all_stage_outputs}
+
+      Include the outcome, tests run, and any remaining risks.
+
 workflows:
   default:
     stages:

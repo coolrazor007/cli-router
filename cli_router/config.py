@@ -32,6 +32,10 @@ class RouterConfig:
     def workflows(self) -> dict[str, Any]:
         return self.data.setdefault("workflows", {})
 
+    @property
+    def stage_library(self) -> list[Any]:
+        return self.data.setdefault("stage_library", [])
+
 
 def user_config_path() -> Path:
     return Path.home() / ".cli-router" / "config.yaml"
@@ -120,6 +124,17 @@ def _validate_config(data: dict[str, Any], source: Path | None) -> None:
             raise ConfigError(f"tool {name!r} must be a mapping")
         if "command" not in tool:
             raise ConfigError(f"tool {name!r} is missing command")
+
+    stage_library = data.get("stage_library", [])
+    if not isinstance(stage_library, list):
+        raise ConfigError("stage_library must be a list")
+    for template in stage_library:
+        if not isinstance(template, dict):
+            raise ConfigError("stage_library template must be a mapping")
+        if "id" not in template or "tool" not in template or "input_template" not in template:
+            raise ConfigError("stage_library template is missing id, tool, or input_template")
+        if template["tool"] not in data.get("tools", {}):
+            raise ConfigError(f"stage_library references unknown tool {template['tool']!r}")
 
     for name, workflow in data.get("workflows", {}).items():
         if not isinstance(workflow, dict):

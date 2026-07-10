@@ -1,0 +1,9 @@
+tools:
+  grok-coder:
+    type: grok
+    command:
+      - grok
+      - --single
+      - "{prompt}"
+    output:
+      format: text

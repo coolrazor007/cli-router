@@ -35,6 +35,33 @@ def test_model_options_fall_back_when_cli_is_unavailable():
     assert "gpt-5.1" in model_options_for_provider("codex", runner=missing_runner)
 
 
+def test_grok_model_options_use_models_command_output():
+    def fake_runner(command, **kwargs):
+        assert command == ["grok", "models"]
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            """You are logged in with grok.com.
+\x1b[2m2026-07-09T17:44:08.397284Z\x1b[0m \x1b[31mERROR\x1b[0m Settings fetch failed after 3 attempts
+
+Default model: grok-build
+
+Available models:
+  * grok-build (default)
+""",
+            "",
+        )
+
+    assert model_options_for_provider("grok", runner=fake_runner) == ["grok-build"]
+
+
+def test_grok_static_fallback_uses_grok_build_model_id():
+    def missing_runner(command, **kwargs):
+        raise FileNotFoundError(command[0])
+
+    assert model_options_for_provider("grok", runner=missing_runner) == ["grok-build"]
+
+
 def test_claude_static_fallback_uses_current_claude_code_model_ids():
     def missing_runner(command, **kwargs):
         raise FileNotFoundError(command[0])
@@ -73,3 +100,11 @@ def test_provider_tool_config_uses_provider_command_and_metadata():
     assert tool["model"] == "claude-sonnet-4.5"
     assert tool["effort"] == "high"
     assert tool["command"] == ["claude", "-p", "{prompt}"]
+
+
+def test_provider_tool_config_uses_grok_single_turn_command():
+    tool = provider_tool_config("grok", "grok-build", "medium")
+
+    assert tool["provider"] == "grok"
+    assert tool["model"] == "grok-build"
+    assert tool["command"] == ["grok", "--single", "{prompt}"]

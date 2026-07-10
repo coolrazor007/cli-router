@@ -151,10 +151,13 @@ def _run_stage(
     logger: logging.Logger,
 ) -> None:
     stage_id = str(stage["id"])
+    previous_output, all_stage_outputs = _accumulated_outputs(summary)
     rendered_input = _render_template(
         str(stage.get("input_template", "{user_prompt}")),
         user_prompt=user_prompt,
         plan_path=str(summary.plan_path),
+        previous_output=previous_output,
+        all_stage_outputs=all_stage_outputs,
     )
     tool_names = [str(stage["tool"]), *[str(tool_name) for tool_name in stage.get("fallback_tools", [])]]
 
@@ -177,6 +180,8 @@ def _run_stage(
             "prompt": rendered_input,
             "user_prompt": user_prompt,
             "plan_path": str(summary.plan_path),
+            "previous_output": previous_output,
+            "all_stage_outputs": all_stage_outputs,
         }
         if observer is not None:
             observer.stage_started(stage_id, tool_name, attempt)
@@ -305,6 +310,26 @@ def _render_template(template: str, **variables: str) -> str:
     return render_placeholders(template, variables)
 
 
+def _accumulated_outputs(summary: WorkflowSummary) -> tuple[str, str]:
+    """Collect prior stages' extracted outputs for downstream template variables.
+
+    ``previous_output`` is the extracted final answer of the most recent
+    successfully-extracted stage; ``all_stage_outputs`` is every such output so
+    far, each labeled with its stage id. Attempts that produced no extracted
+    text (failures, fallbacks) are skipped, so a stage only forwards the answer
+    a downstream stage can actually use. Both are empty strings for the first
+    stage, which has no predecessor.
+    """
+    completed = [stage for stage in summary.stages if stage.extracted]
+    if not completed:
+        return "", ""
+    previous_output = completed[-1].extracted or ""
+    all_stage_outputs = "\n\n".join(
+        f"## {stage.stage_id}\n{stage.extracted}" for stage in completed
+    )
+    return previous_output, all_stage_outputs
+
+
 def _finalize(
     config: RouterConfig,
     summary: WorkflowSummary,
@@ -327,7 +352,7 @@ def _finalize(
             "finished_at": summary.finished_at,
             "duration_seconds": summary.duration_seconds,
             "metrics": metrics,
-            "stages": summary.stages,
+            "stages": [_stage_manifest_entry(stage) for stage in summary.stages],
         },
     )
     append_run_metrics(config, metrics)
@@ -376,6 +401,39 @@ def _metrics(summary: WorkflowSummary, workflow_name: str) -> dict[str, Any]:
         "stage_count": len(summary.stages),
         "retry_count": sum(1 for stage in summary.stages if stage.attempt > 1),
         "stages": stages,
+    }
+
+
+def _stage_manifest_entry(stage: StageSummary) -> dict[str, Any]:
+    """Compact per-stage record for ``run.yaml``.
+
+    A stage's full ``stdout``/``stderr`` (and extracted answer) are already
+    persisted as sidecar artifact files next to the manifest, so the manifest
+    stores byte counts and the artifact filenames instead of duplicating
+    potentially huge streams inline. The rendered ``command`` is kept — it is
+    the only record of the exact prompt sent to the tool. Artifact filenames
+    mirror the prefix used by ``write_stage_artifacts`` (``<stage>`` for the
+    first attempt, ``<stage>.<tool>`` for fallback attempts).
+    """
+    prefix = stage.stage_id if stage.attempt == 1 else f"{stage.stage_id}.{stage.tool}"
+    artifacts = {"stdout": f"{prefix}.stdout", "stderr": f"{prefix}.stderr"}
+    if stage.extracted is not None:
+        artifacts["extracted"] = f"{prefix}.extracted.md"
+    return {
+        "stage_id": stage.stage_id,
+        "tool": stage.tool,
+        "attempt": stage.attempt,
+        "command": stage.result.command,
+        "exit_code": stage.result.returncode,
+        "failure_kind": stage.failure_kind,
+        "started_at": stage.started_at,
+        "finished_at": stage.finished_at,
+        "duration_seconds": stage.duration_seconds,
+        "subprocess_seconds": stage.result.duration_seconds,
+        "stdout_bytes": _byte_count(stage.result.stdout),
+        "stderr_bytes": _byte_count(stage.result.stderr),
+        "extracted_bytes": _byte_count(stage.extracted) if stage.extracted is not None else 0,
+        "artifacts": artifacts,
     }
 
 

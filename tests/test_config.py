@@ -117,3 +117,28 @@ workflows:
 
     with pytest.raises(ConfigError, match="duplicate stage id"):
         load_config()
+
+
+def test_stage_library_validates_template_tools(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Path("cli-router.yaml").write_text(
+        """
+version: 1
+tools:
+  planner:
+    command: ["echo", "plan"]
+stage_library:
+  - id: reviewer
+    tool: missing
+    input_template: "Review {user_prompt}"
+workflows:
+  default:
+    stages:
+      - id: planner
+        tool: planner
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="stage_library references unknown tool 'missing'"):
+        load_config()

@@ -1,6 +1,6 @@
 # CLI-Router
 
-CLI-Router is a Python command-line orchestrator for AI coding tools. It routes ordered workflow stages across external CLIs such as Claude Code, Codex, Hermes, and local model tools.
+CLI-Router is a Python command-line orchestrator for AI coding tools. It routes ordered workflow stages across external CLIs such as Claude Code, Codex, Hermes, Grok, and local model tools.
 
 The router is intentionally programmatic and non-intelligent: it loads configured commands, renders prompt templates, captures stdout/stderr, extracts configured output, writes artifacts such as `PLAN.md`, and records run artifacts.
 
@@ -50,9 +50,9 @@ Running `cli-router` with no subcommand opens the interactive TUI. `plan` runs t
 - Prompt: enter a prompt and run the enabled workflow.
 - Workflow: select, reorder, and run stages.
 - Stage configuration: select stages, edit prompts, and choose model configs.
-- Model Config: edit provider, model, and effort metadata.
+- Model Config: add providers/model configs and edit provider, model, and effort metadata.
 
-On first run, if no config exists, the TUI asks which providers to enable. Built-in choices include `codex`, `claude`, and `hermes`. The default workflow uses the first selected provider, and CLI-Router writes the generated config to `~/.cli-router/config.yaml`.
+On first run, if no config exists, the TUI asks which providers to enable. Built-in choices include `codex`, `claude`, `hermes`, and `grok`. The default workflow uses the first selected provider, and CLI-Router writes the generated config to `~/.cli-router/config.yaml`.
 
 Navigation is consistent across the TUI:
 
@@ -68,14 +68,20 @@ The workflow screen uses a checkbox selector in the left column and shows each s
 - Up/Down arrows move the cursor.
 - Space toggles a stage between `☑` selected and `☐` skipped.
 - `u` and `d` reorder the current stage.
+- `i` inserts a stage from the stage library after the current stage.
+- `x` removes the current stage from the workflow.
 - Enter runs the checked stages in the displayed order.
 
 Stage prompts use these official variables:
 
 - `[user prompt]`: the request entered through the Prompt menu.
-- `[previous stage output]`: the output file from the previous planning/output stage.
+- `[previous stage output]`: the final extracted output of the immediately preceding stage (empty for the first stage).
+- `[all stage outputs]`: the final outputs of every completed stage so far, each labeled with its stage id.
+- `[plan file]`: the path to the workflow plan file (`PLAN.md`).
 
 When stages run, those display variables are converted to CLI-Router's internal placeholders.
+In Stage configuration, the stage-prompt editor keeps this variable legend visible,
+supports multiline prompts with Enter, and saves with Ctrl+D.
 
 ## Configuration
 
@@ -130,6 +136,16 @@ tools:
     output:
       format: text
 
+  grok-coder:
+    type: grok
+    timeout_seconds: 120
+    command:
+      - grok
+      - --single
+      - "{prompt}"
+    output:
+      format: text
+
   codex-reviewer:
     type: codex
     timeout_seconds: 120
@@ -141,6 +157,28 @@ tools:
       - "{prompt}"
     output:
       format: text
+
+stage_library:
+  - id: coder
+    tool: codex-coder
+    input_template: |
+      Please implement the plan in {plan_path}.
+
+      Original user request:
+      {user_prompt}
+
+  - id: qa
+    tool: codex-reviewer
+    input_template: |
+      Review the changes against {plan_path}.
+
+      Original user request:
+      {user_prompt}
+
+  - id: summary
+    tool: codex-reviewer
+    input_template: |
+      Summarize the workflow outcome for {user_prompt}.
 
 workflows:
   default:
@@ -183,17 +221,19 @@ Command args and templates support `{prompt}`, `{user_prompt}`, and `{plan_path}
 Workflow stages are modular:
 
 - `stages` order is execution order for `cli-router run`.
+- `stage_library` is an optional top-level list of reusable stage templates that the TUI can insert into a workflow.
+- Inserting a template whose ID already exists auto-suffixes the new workflow stage, for example `coder` becomes `coder-2`, so artifacts remain distinct.
 - `enabled: false` keeps a stage out of default `run` and `implement` execution.
 - `--stages review,coder` selects stages explicitly and controls their order.
-- `cli-router tui` provides an interactive main menu with Prompt first. The workflow screen has checkbox selection, stage ordering, and a Prompt column that previews each stage prompt.
-- The TUI stage configuration screen lets users select a stage with Up/Down, press Enter to edit its prompt, and choose its Model Config from a picker. `A` adds a stage and also uses the Model Config picker. Changes persist to `~/.cli-router/config.yaml` when the TUI is operating on the generated or user-level config. Project-local configs are left unchanged.
-- The TUI calls configured tools "Model Configs" and lets users edit provider, model, and effort metadata. Runtime command configuration remains in YAML.
+- `cli-router tui` provides an interactive main menu with Prompt first. The workflow screen has checkbox selection, stage ordering, stage-library insertion, selected-stage removal, and a Prompt column that previews each stage prompt.
+- The TUI stage configuration screen lets users select a stage with Up/Down, press Enter to edit its prompt, and choose its Model Config from a picker. The stage-prompt editor keeps the official variable legend visible, supports multiline prompts with Enter, and saves with Ctrl+D. `A` adds a custom stage, `I` inserts from the stage library, and `X` removes the selected stage. Changes persist to `~/.cli-router/config.yaml` when the TUI is operating on the generated or user-level config. Project-local configs are left unchanged.
+- The TUI calls configured tools "Model Configs" and lets users add providers/model configs or edit provider, model, and effort metadata. Runtime command configuration remains in YAML.
 - Model Config rows are edited with `E`; Enter does not start editing. Provider, model, and effort are selected with arrow-key pickers.
 - Esc cancels the active TUI screen, picker, or text entry without applying partial changes. Ctrl+C cancels from any TUI screen, picker, or text entry and exits with code `130`.
 - When a workflow starts from Prompt or Workflow, the TUI immediately shows a "Running workflow" panel and streams condensed stage progress while external tools execute.
 - By default, the TUI collapses verbose thinking blocks and unified diffs, then prints a compact summary with the run artifact directory. Set `defaults.tui_verbosity: full` to restore the raw stdout/stderr dump.
-- Model options are discovered through the provider CLI when possible with stdin closed and a short timeout, then fall back to built-in known model names. Codex discovery uses `codex debug models` and reads the returned model catalog, so newly available Codex models appear without a package update. Claude currently uses a static fallback list because Claude Code does not expose an equivalent model catalog command.
-- TUI stage prompts use official bracket variables: `[user prompt]` and `[previous stage output]`. Unknown bracket variables are rejected.
+- Model options are discovered through the provider CLI when possible with stdin closed and a short timeout, then fall back to built-in known model names. Codex discovery uses `codex debug models` and reads the returned model catalog, and Grok discovery uses `grok models`. Claude currently uses a static fallback list because Claude Code does not expose an equivalent model catalog command.
+- TUI stage prompts use official bracket variables: `[user prompt]`, `[previous stage output]`, `[all stage outputs]`, and `[plan file]`. Unknown bracket variables are rejected.
 - A stage with `output_file` writes its extracted output to that file.
 - A stage with `updates_plan: true` makes later `{plan_path}` placeholders point to its `output_file`.
 

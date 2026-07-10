@@ -107,6 +107,99 @@ def test_run_workflow_records_diagnostics_and_metrics(tmp_path, monkeypatch):
     assert json.loads(metric_lines[-1])["run_id"] == summary.run_dir.name
 
 
+def test_run_workflow_forwards_previous_and_all_stage_outputs(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    echo = "import sys; print(sys.argv[1])"
+    data = {
+        "version": 1,
+        "defaults": {"plan_file": "PLAN.md", "run_dir": ".cli-router/runs"},
+        "tools": {
+            "planner": {
+                "command": [sys.executable, "-c", "import json; print(json.dumps({'result': 'THE PLAN'}))", "{prompt}"],
+                "output": {"format": "json", "extract": "result"},
+            },
+            "echo": {"command": [sys.executable, "-c", echo, "{prompt}"], "output": {"format": "text"}},
+        },
+        "workflows": {
+            "default": {
+                "stages": [
+                    {"id": "planner", "tool": "planner", "input_template": "plan {user_prompt}", "output_file": "PLAN.md"},
+                    {"id": "coder", "tool": "echo", "input_template": "CODED"},
+                    {"id": "qa", "tool": "echo", "input_template": "prev=<{previous_output}> all=<{all_stage_outputs}>"},
+                ]
+            }
+        },
+    }
+    Path(tmp_path, "cli-router.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    summary = run_workflow(load_config(), "add logging")
+
+    assert summary.exit_code == 0
+    qa_prompt = summary.stages[2].result.stdout
+    # previous_output is the immediately preceding stage's extracted output (coder), not the plan.
+    assert "prev=<CODED" in qa_prompt
+    assert "all=<" in qa_prompt
+    # all_stage_outputs carries every completed stage so far, labeled by stage id.
+    assert "## planner\nTHE PLAN" in qa_prompt
+    assert "## coder\nCODED" in qa_prompt
+
+
+def test_run_workflow_first_stage_has_empty_stage_output_variables(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    echo = "import sys; print(sys.argv[1])"
+    data = {
+        "version": 1,
+        "defaults": {"plan_file": "PLAN.md", "run_dir": ".cli-router/runs"},
+        "tools": {"echo": {"command": [sys.executable, "-c", echo, "{prompt}"], "output": {"format": "text"}}},
+        "workflows": {
+            "default": {
+                "stages": [
+                    {"id": "planner", "tool": "echo", "input_template": "prev=<{previous_output}> all=<{all_stage_outputs}>", "output_file": "PLAN.md"},
+                ]
+            }
+        },
+    }
+    Path(tmp_path, "cli-router.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    summary = run_workflow(load_config(), "add logging")
+
+    assert summary.exit_code == 0
+    assert "prev=<> all=<>" in summary.stages[0].result.stdout
+
+
+def test_run_manifest_omits_duplicated_stream_content(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    write_config(
+        tmp_path,
+        "import json; print(json.dumps({'result': 'the plan'}))",
+        coder_code="import sys; sys.stderr.write('X' * 5000); print('done')",
+    )
+
+    summary = run_workflow(load_config(), "add logging")
+
+    raw = (summary.run_dir / "run.yaml").read_text(encoding="utf-8")
+    # The 5 KB of stderr lives only in the sidecar file, not inline in the manifest.
+    assert "X" * 5000 not in raw
+    assert (summary.run_dir / "coder.stderr").read_text(encoding="utf-8").count("X") == 5000
+
+    manifest = yaml.safe_load(raw)
+    coder = manifest["stages"][1]
+    assert coder["stage_id"] == "coder"
+    assert coder["exit_code"] == 0
+    assert coder["stderr_bytes"] == 5000
+    assert coder["artifacts"] == {
+        "stdout": "coder.stdout",
+        "stderr": "coder.stderr",
+        "extracted": "coder.extracted.md",
+    }
+    # The exact prompt sent is still recorded for diagnostics.
+    assert "command" in coder
+    # No inline stdout/stderr streams remain on the stage record.
+    assert "stdout" not in coder
+    assert "stderr" not in coder
+    assert "result" not in coder
+
+
 def test_run_workflow_does_not_expand_placeholder_tokens_in_user_prompt(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     write_config(tmp_path, "import json; print(json.dumps({'result': 'the plan'}))")
@@ -198,6 +291,47 @@ def test_run_workflow_can_select_and_order_stages(tmp_path, monkeypatch):
     assert (summary.run_dir / "gamma.stdout").read_text(encoding="utf-8") == "gamma\n"
     assert (summary.run_dir / "beta.stdout").read_text(encoding="utf-8") == "beta\n"
     assert not (summary.run_dir / "alpha.stdout").exists()
+
+
+def test_run_workflow_supports_duplicate_stage_templates_with_unique_ids(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    data = {
+        "version": 1,
+        "defaults": {
+            "plan_file": "PLAN.md",
+            "run_dir": ".cli-router/runs",
+            "stop_on_failure": True,
+        },
+        "tools": {
+            "planner": {
+                "command": [sys.executable, "-c", "import json; print(json.dumps({'result': 'plan'}))"],
+                "output": {"format": "json", "extract": "result"},
+            },
+            "echo": {
+                "command": [sys.executable, "-c", "import sys; print(sys.argv[1])", "{prompt}"],
+                "output": {"format": "text"},
+            },
+        },
+        "workflows": {
+            "default": {
+                "stages": [
+                    {"id": "planner", "tool": "planner", "input_template": "plan {user_prompt}", "output_file": "PLAN.md"},
+                    {"id": "coder", "tool": "echo", "input_template": "code {plan_path}"},
+                    {"id": "qa", "tool": "echo", "input_template": "qa {plan_path}"},
+                    {"id": "coder-2", "tool": "echo", "input_template": "code again {plan_path}"},
+                    {"id": "summary", "tool": "echo", "input_template": "summary {user_prompt}"},
+                ]
+            }
+        },
+    }
+    Path("cli-router.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    summary = run_workflow(load_config(), "duplicate coder")
+
+    assert summary.exit_code == 0
+    assert [stage.stage_id for stage in summary.stages] == ["planner", "coder", "qa", "coder-2", "summary"]
+    assert (summary.run_dir / "coder.stdout").read_text(encoding="utf-8") == "code PLAN.md\n"
+    assert (summary.run_dir / "coder-2.stdout").read_text(encoding="utf-8") == "code again PLAN.md\n"
 
 
 def test_implement_workflow_fails_when_plan_is_missing(tmp_path, monkeypatch):

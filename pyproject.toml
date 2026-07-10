@@ -17,6 +17,7 @@ keywords = [
   "cli",
   "claude",
   "codex",
+  "grok",
   "agents",
   "llm",
   "router",

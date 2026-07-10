@@ -2,24 +2,27 @@
 
 from __future__ import annotations
 
-import subprocess
 import json
+import re
+import subprocess
 from collections.abc import Callable
 from typing import Any
 
 
-PROVIDERS = ("codex", "claude", "hermes")
+PROVIDERS = ("codex", "claude", "hermes", "grok")
 
 DEFAULT_MODELS = {
     "codex": ["gpt-5.5", "gpt-5.1", "gpt-5"],
     "claude": ["claude-fable-5", "claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"],
     "hermes": ["hermes-auto"],
+    "grok": ["grok-build"],
 }
 
 MODEL_LIST_COMMANDS = {
     "codex": (["codex", "debug", "models"],),
     "claude": (["claude", "models"], ["claude", "model", "list"]),
     "hermes": (["hermes", "models"], ["hermes", "model", "list"]),
+    "grok": (["grok", "models"],),
 }
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
@@ -49,6 +52,8 @@ def _provider_command(provider: str) -> list[str]:
         return ["claude", "-p", "{prompt}"]
     if provider == "hermes":
         return ["hermes", "run", "{prompt}"]
+    if provider == "grok":
+        return ["grok", "--single", "{prompt}"]
     return [provider, "{prompt}"]
 
 
@@ -101,11 +106,29 @@ def _parse_model_catalog(output: str) -> list[str]:
 def _parse_model_output(output: str) -> list[str]:
     models: list[str] = []
     for line in output.splitlines():
-        model = line.strip().lstrip("-*").strip()
+        model = _strip_ansi(line).strip().lstrip("-*").strip()
         if not model or model.lower().startswith(("model", "name", "id ")):
+            continue
+        if _is_model_output_noise(model):
+            continue
+        if model.lower().startswith("default model:"):
+            default_model = model.split(":", 1)[1].strip().split()
+            if default_model:
+                models.append(default_model[0])
             continue
         models.append(model.split()[0])
     return _dedupe(models)
+
+
+def _strip_ansi(value: str) -> str:
+    return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
+
+
+def _is_model_output_noise(line: str) -> bool:
+    lower = line.lower()
+    if lower.startswith(("available models:", "you are logged in", "error ", "warning:")):
+        return True
+    return " error " in lower or " warn " in lower
 
 
 def _dedupe(values: list[str]) -> list[str]:

@@ -158,8 +158,11 @@ def _print_run_detail(detail: RunDetail) -> None:
                 continue
             stage_id = stage.get("stage_id", "unknown")
             tool = stage.get("tool", "unknown")
-            result = stage.get("result", {})
-            exit_code = result.get("returncode", "unknown") if isinstance(result, dict) else "unknown"
+            exit_code = stage.get("exit_code")
+            if exit_code is None:
+                # Backward compatibility with manifests that embedded the full result.
+                result = stage.get("result", {})
+                exit_code = result.get("returncode", "unknown") if isinstance(result, dict) else "unknown"
             failure = stage.get("failure_kind") or "none"
             duration = stage.get("duration_seconds")
             duration_text = f", duration {duration}s" if duration is not None else ""
