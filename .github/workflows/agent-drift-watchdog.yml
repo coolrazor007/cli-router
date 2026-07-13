@@ -1,0 +1,129 @@
+name: Agent drift watchdog
+
+# Scheduled loop: run `cli-router doctor` on the self-hosted runner (which has
+# the authenticated provider CLIs), and if a shipped fallback model has been
+# retired upstream, have a local agent open a PR that fixes DEFAULT_MODELS.
+#
+# SECURITY: this runs on a self-hosted runner that holds your subscription
+# credentials. It is triggered ONLY by the schedule or a maintainer clicking
+# "Run workflow" — never by pull_request, and never by fork code. Do not add
+# untrusted triggers to this file.
+
+on:
+  schedule:
+    - cron: "0 14 * * 1" # Mondays 14:00 UTC
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Detect drift only; do not patch or open a PR"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: agent-drift-watchdog
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: [self-hosted, mothership]
+    timeout-minutes: 5
+    outputs:
+      proceed: ${{ steps.gate.outputs.proceed }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: gate
+        name: Circuit breaker + kill switch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DAILY_CAP: ${{ vars.AGENT_DAILY_CAP || '10' }}
+        run: python3 scripts/agent/preflight.py
+
+  drift:
+    needs: preflight
+    if: needs.preflight.outputs.proceed == 'true'
+    runs-on: [self-hosted, mothership]
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install cli-router
+        run: python3 -m pip install -e .
+
+      - name: Detect drift
+        id: detect
+        run: |
+          python3 scripts/agent/detect_drift.py --timeout 15 | tee drift.json
+          drift=$(python3 -c "import json; print(str(json.load(open('drift.json'))['drift']).lower())")
+          echo "drift=$drift" >> "$GITHUB_OUTPUT"
+
+      - name: No actionable drift
+        if: steps.detect.outputs.drift != 'true'
+        run: echo "No retired shipped models. Nothing to do."
+
+      - name: Dry run — report only
+        if: steps.detect.outputs.drift == 'true' && inputs.dry_run == true
+        run: |
+          echo "Drift found; dry_run=true, not patching:"
+          cat drift.json
+
+      # --- The following steps run only when there is real drift and it's not a dry run ---
+
+      - name: Build agent prompt
+        if: steps.detect.outputs.drift == 'true' && inputs.dry_run != true
+        run: python3 scripts/agent/build_prompt.py drift.json | tee patch_prompt.txt
+
+      - name: Apply fix with local agent
+        if: steps.detect.outputs.drift == 'true' && inputs.dry_run != true
+        run: bash scripts/agent/apply_drift_fix.sh patch_prompt.txt
+
+      - name: Verify — full test suite must pass
+        if: steps.detect.outputs.drift == 'true' && inputs.dry_run != true
+        run: python3 -m pytest -q
+
+      - name: Open PR (auto-merge if enabled)
+        if: steps.detect.outputs.drift == 'true' && inputs.dry_run != true
+        env:
+          AUTOMERGE: ${{ vars.AGENT_DRIFT_AUTOMERGE || 'false' }}
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Agent produced no file changes; opening no PR."
+            exit 0
+          fi
+          git config user.name "cli-router-agent[bot]"
+          git config user.email "cli-router-agent@users.noreply.github.com"
+          branch="agent/drift-$(date -u +%Y%m%d-%H%M%S)"
+          git switch -c "$branch"
+          git add -A
+          git commit -m "Fix provider model-list drift (automated)"
+          git push -u origin "$branch"
+
+          # Ensure labels exist (ignore errors if already created).
+          gh label create agent-created --color 5319e7 --description "Opened by an agent loop" 2>/dev/null || true
+          gh label create agent-drift   --color 1d76db --description "Model-list drift fix"     2>/dev/null || true
+
+          url=$(gh pr create \
+            --title "Fix provider model-list drift" \
+            --body "Automated by the drift watchdog. \`cli-router doctor\` found a retired shipped model; this updates \`DEFAULT_MODELS\`, the test, and the changelog. The full test suite passed on the runner.
+
+          Drift detected:
+          \`\`\`json
+          $(cat drift.json)
+          \`\`\`" \
+            --label agent-created --label agent-drift)
+          echo "Opened $url"
+
+          if [ "$AUTOMERGE" = "true" ]; then
+            echo "Auto-merge enabled — merging."
+            gh pr merge "$url" --squash --delete-branch
+          else
+            echo "Auto-merge disabled (set repo variable AGENT_DRIFT_AUTOMERGE=true to enable). PR left for review."
+          fi
