@@ -51,6 +51,8 @@ class WorkflowObserver(Protocol):
 
     def stage_output(self, stage_id: str, tool: str, line: str) -> None: ...
 
+    def stage_error(self, stage_id: str, tool: str, line: str) -> None: ...
+
     def stage_finished(self, stage: StageSummary) -> None: ...
 
 
@@ -189,6 +191,9 @@ def _run_stage(
                 tool,
                 variables,
                 on_stdout_line=lambda line, stage_id=stage_id, tool_name=tool_name: observer.stage_output(
+                    stage_id, tool_name, line
+                ),
+                on_stderr_line=lambda line, stage_id=stage_id, tool_name=tool_name: observer.stage_error(
                     stage_id, tool_name, line
                 ),
             )

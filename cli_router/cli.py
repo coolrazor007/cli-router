@@ -7,7 +7,10 @@ import sys
 from typing import Sequence
 
 from .config import ConfigError, config_to_yaml, load_config
+from .doctor import ProviderHealth, RepairResult, diagnose, repair
+from .modelcache import ModelCache
 from .runs import RunDetail, RunInfo, list_runs, show_run
+from .streamfmt import condense_extracted
 from .tools import list_tools, test_tool
 from .tui import run_tui
 from .workflows import WorkflowSummary, implement_workflow, plan_workflow, run_workflow
@@ -35,6 +38,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "check":
             print("Configuration OK")
             return 0
+        if args.command == "doctor":
+            return _run_doctor(repair_enabled=args.repair)
         if args.command == "config" and args.config_command == "show":
             print(config_to_yaml(config), end="")
             return 0
@@ -87,6 +92,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("check", help="Validate the loaded configuration.")
 
+    doctor_parser = subparsers.add_parser(
+        "doctor", help="Diagnose provider CLIs for model-discovery drift and optionally repair it."
+    )
+    doctor_parser.add_argument(
+        "--repair",
+        action="store_true",
+        help="Use a healthy provider to recover drifting providers' model lists into the cache.",
+    )
+
     config_parser = subparsers.add_parser("config", help="Inspect configuration.")
     config_subparsers = config_parser.add_subparsers(dest="config_command")
     config_subparsers.add_parser("show", help="Print the loaded configuration.")
@@ -106,6 +120,59 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_doctor(*, repair_enabled: bool) -> int:
+    cache = ModelCache.load()
+    health = diagnose(cache=cache)
+
+    reports: list[RepairResult] | None = None
+    if repair_enabled:
+        if any(h.drifting for h in health):
+            print("Repairing via agent backends (trying providers in order; press Ctrl-C to cancel)…\n")
+        reports = repair(health, cache=cache)
+        if reports:
+            # Re-diagnose so the printed table reflects freshly cached lists.
+            health = diagnose(cache=cache)
+
+    _print_doctor(health, reports)
+    # Fail only when a provider is installed but has no models at all — the
+    # actionable "broken and not recovered" state.
+    broken = [h for h in health if h.cli_present and not h.models]
+    return 1 if broken else 0
+
+
+def _print_doctor(health: list[ProviderHealth], reports: list[RepairResult] | None) -> None:
+    print(f"{'provider':<10} {'cli':<8} {'live':<7} models")
+    for h in health:
+        cli = "present" if h.cli_present else "missing"
+        if h.source == "static":
+            live = "static"
+        elif h.healthy:
+            live = "ok"
+        elif h.cli_present:
+            live = "drift"
+        else:
+            live = "-"
+        preview = ", ".join(h.models[:4]) + (" …" if len(h.models) > 4 else "") if h.models else "(none)"
+        print(f"{h.provider:<10} {cli:<8} {live:<7} {preview}")
+        if not h.healthy and h.source != "static" and h.detail:
+            print(f"{'':<10} └─ {h.detail}")
+
+    if reports is None:
+        drifting = [h.provider for h in health if h.drifting]
+        if drifting:
+            print()
+            print(f"Run 'cli-router doctor --repair' to recover: {', '.join(drifting)}")
+        return
+
+    print()
+    if not reports:
+        print("doctor: no drifting providers to repair.")
+        return
+    for report in reports:
+        status = "fixed" if report.ok else "failed"
+        print(f"doctor {status}: {report.provider} — {report.detail}")
+
+
 def _parse_stage_names(value: str | None) -> list[str] | None:
     if not value:
         return None
@@ -116,7 +183,11 @@ def _print_summary(summary: WorkflowSummary) -> int:
     print(f"run_dir: {summary.run_dir}")
     print(f"plan_path: {summary.plan_path}")
     for stage in summary.stages:
-        print(f"{stage.stage_id}: exit {stage.result.returncode}")
+        print(f"{stage.stage_id} ({stage.tool}): exit {stage.result.returncode}")
+        preview = condense_extracted(stage.extracted)
+        if preview:
+            for line in preview.splitlines():
+                print(f"  {line}")
     if summary.error:
         print(f"error: {summary.error}", file=sys.stderr)
     print(f"exit_code: {summary.exit_code}")

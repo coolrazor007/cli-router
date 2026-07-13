@@ -443,6 +443,9 @@ def test_run_workflow_observer_receives_stage_events_in_order(tmp_path, monkeypa
         def stage_output(self, stage_id, tool, line):
             events.append(("output", stage_id, tool, line))
 
+        def stage_error(self, stage_id, tool, line):
+            events.append(("error", stage_id, tool, line))
+
         def stage_finished(self, stage):
             events.append(("finished", stage.stage_id, stage.tool, stage.result.returncode))
 

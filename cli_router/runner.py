@@ -59,8 +59,15 @@ def stream_tool(
     variables: Mapping[str, Any],
     *,
     on_stdout_line: Callable[[str], None] | None = None,
+    on_stderr_line: Callable[[str], None] | None = None,
 ) -> ToolRunResult:
-    """Run a tool while delivering stdout lines as they are observed."""
+    """Run a tool while delivering stdout/stderr lines as they are observed.
+
+    Both streams are funnelled through one tagged queue and dispatched from this
+    (single) loop, so ``on_stdout_line``/``on_stderr_line`` are always invoked
+    from the same thread — callers can render to a live view without their own
+    locking. Within each stream, line order is preserved.
+    """
 
     started = time.monotonic()
     rendered = _render_command(tool, variables)
@@ -81,47 +88,56 @@ def stream_tool(
     except OSError as exc:
         return ToolRunResult(rendered, 126, "", f"Failed to run command: {exc}\n", _elapsed(started))
 
-    stdout_queue: Queue[str] = Queue()
+    output_queue: Queue[tuple[str, str]] = Queue()
+    stdout_lines: list[str] = []
     stderr_lines: list[str] = []
 
-    def read_stdout() -> None:
-        assert process.stdout is not None
-        for line in process.stdout:
-            stdout_queue.put(line)
+    def read_stream(pipe: Any, name: str) -> None:
+        for line in pipe:
+            output_queue.put((name, line))
 
-    def read_stderr() -> None:
-        assert process.stderr is not None
-        for line in process.stderr:
-            stderr_lines.append(line)
-
-    stdout_thread = threading.Thread(target=read_stdout, daemon=True)
-    stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+    stdout_thread = threading.Thread(target=read_stream, args=(process.stdout, "stdout"), daemon=True)
+    stderr_thread = threading.Thread(target=read_stream, args=(process.stderr, "stderr"), daemon=True)
     stdout_thread.start()
     stderr_thread.start()
 
-    stdout_lines: list[str] = []
-    timed_out = False
+    def dispatch(name: str, line: str) -> None:
+        if name == "stdout":
+            stdout_lines.append(line)
+            if on_stdout_line is not None:
+                on_stdout_line(line)
+        else:
+            stderr_lines.append(line)
+            if on_stderr_line is not None:
+                on_stderr_line(line)
 
-    while process.poll() is None or stdout_thread.is_alive() or not stdout_queue.empty():
+    timed_out = False
+    while (
+        process.poll() is None
+        or stdout_thread.is_alive()
+        or stderr_thread.is_alive()
+        or not output_queue.empty()
+    ):
+        if (
+            timeout_seconds is not None
+            and process.poll() is None
+            and time.monotonic() - started >= timeout_seconds
+        ):
+            timed_out = True
+            process.kill()
+            process.wait()
+            break
         try:
-            line = stdout_queue.get(timeout=0.05)
+            name, line = output_queue.get(timeout=0.05)
         except Empty:
-            if timeout_seconds is not None and time.monotonic() - started >= timeout_seconds:
-                timed_out = True
-                process.kill()
-                break
             continue
-        stdout_lines.append(line)
-        if on_stdout_line is not None:
-            on_stdout_line(line)
+        dispatch(name, line)
 
     stdout_thread.join(timeout=1)
     stderr_thread.join(timeout=1)
-    while not stdout_queue.empty():
-        line = stdout_queue.get()
-        stdout_lines.append(line)
-        if on_stdout_line is not None:
-            on_stdout_line(line)
+    while not output_queue.empty():
+        name, line = output_queue.get()
+        dispatch(name, line)
 
     if timed_out:
         stderr = "".join(stderr_lines)

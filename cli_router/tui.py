@@ -6,6 +6,7 @@ import os
 import re
 import signal
 import sys
+from collections import deque
 from copy import deepcopy
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -19,8 +20,9 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .config import RouterConfig, save_config, user_config_path
-from .models import PROVIDERS, model_options_for_provider, provider_tool_config
-from .streamfmt import OutputCondenser
+from .models import PROVIDERS, _provider_command, model_options_for_provider, provider_tool_config
+from .modelcache import ModelCache
+from .streamfmt import OutputCondenser, condense_extracted, first_meaningful_line, strip_ansi
 from .workflows import StageSummary, WorkflowSummary, run_workflow
 
 
@@ -486,6 +488,12 @@ def update_model_config(
     tool["provider"] = provider
     tool["model"] = model
     tool["effort"] = effort
+    # Regenerate the command so the edited model is actually routed to the CLI.
+    # Only known providers own their command shape; leave custom/generic tools
+    # (which carry hand-written commands) untouched.
+    if provider in PROVIDERS:
+        tool["type"] = provider
+        tool["command"] = _provider_command(provider, model, effort)
 
 
 def add_model_config(
@@ -623,8 +631,9 @@ def _persist_if_needed(config: RouterConfig, persistent: bool) -> None:
 
 def _configure_first_run(config: RouterConfig, providers: list[str]) -> None:
     first_provider = providers[0]
+    cache = ModelCache.load()
     tools = {
-        provider: provider_tool_config(provider, model_options_for_provider(provider)[0])
+        provider: provider_tool_config(provider, model_options_for_provider(provider, cache=cache)[0])
         for provider in providers
     }
     config.data.clear()
@@ -1609,7 +1618,7 @@ def _run_provider_picker(current_provider: str, console: Console, read_key: KeyR
 
 
 def _run_model_picker(provider: str, console: Console, read_key: KeyReader) -> str | None:
-    models = model_options_for_provider(provider)
+    models = model_options_for_provider(provider, cache=ModelCache.load())
     cursor = 0
     while True:
         _render_option_picker(console, f"Select model for {provider}", models, cursor)
@@ -1699,10 +1708,14 @@ def _prompt_variable_table() -> Table:
 
 
 class _TuiObserver:
+    _STDOUT_TAIL = 8
+    _STDERR_TAIL = 5
+
     def __init__(self, console: Console) -> None:
         self.console = console
         self._statuses: list[dict[str, str | int]] = []
         self._condensers: dict[tuple[str, str, int], OutputCondenser] = {}
+        self._progress: dict[tuple[str, str, int], deque[str]] = {}
         self._current: tuple[str, str, int] | None = None
         self._live: Live | None = None
 
@@ -1715,7 +1728,10 @@ class _TuiObserver:
     def stage_started(self, stage_id: str, tool: str, attempt: int) -> None:
         self._current = (stage_id, tool, attempt)
         self._condensers[self._current] = OutputCondenser()
-        self._statuses.append({"stage": stage_id, "tool": tool, "attempt": attempt, "status": "running"})
+        self._progress[self._current] = deque(maxlen=200)
+        self._statuses.append(
+            {"stage": stage_id, "tool": tool, "attempt": attempt, "status": "running", "result": ""}
+        )
         if not self.console.is_terminal:
             self.console.print(f"Running {stage_id} ({tool})")
         self._refresh()
@@ -1728,11 +1744,26 @@ class _TuiObserver:
         condenser.feed(line)
         self._refresh()
 
+    def stage_error(self, stage_id: str, tool: str, line: str) -> None:
+        # Providers such as Codex stream their live progress on stderr; surface
+        # it as dimmed secondary output so a long stage is not a silent wait.
+        key = (stage_id, tool, self._attempt_for(stage_id, tool))
+        progress = self._progress.get(key)
+        if progress is None:
+            return
+        cleaned = strip_ansi(line).rstrip("\n")
+        if not cleaned.strip():
+            return
+        progress.append(cleaned)
+        self._refresh()
+
     def stage_finished(self, stage: StageSummary) -> None:
         key = (stage.stage_id, stage.tool, self._attempt_for(stage.stage_id, stage.tool))
+        teaser = first_meaningful_line(stage.extracted)
         for status in reversed(self._statuses):
             if status["stage"] == stage.stage_id and status["tool"] == stage.tool:
                 status["status"] = f"exit {stage.result.returncode}"
+                status["result"] = teaser
                 break
         if not self.console.is_terminal:
             for line in self._condensers.get(key, OutputCondenser()).lines:
@@ -1751,31 +1782,39 @@ class _TuiObserver:
             self._live.update(self._render(), refresh=True)
 
     def _render(self) -> Panel:
+        muted = TUI_THEME["muted"]
         table = _ui_table()
-        table.add_column("Stage")
-        table.add_column("Model Config")
-        table.add_column("Attempt", justify="right")
-        table.add_column("Status")
+        table.add_column("Stage", no_wrap=True, overflow="ellipsis")
+        table.add_column("Model Config", no_wrap=True, overflow="ellipsis")
+        table.add_column("Status", no_wrap=True, overflow="ellipsis")
+        table.add_column("Result", no_wrap=True, overflow="ellipsis")
         for status in self._statuses:
+            running = status["status"] == "running"
+            result = str(status["result"]) or ("working…" if running else "")
+            result_cell = f"[{muted}]{escape(result)}[/]" if result else ""
             table.add_row(
                 str(status["stage"]),
                 str(status["tool"]),
-                str(status["attempt"]),
                 str(status["status"]),
+                result_cell,
             )
 
         output = _ui_table(show_header=False)
-        output.add_column("Output")
-        if self._current is not None:
-            for line in self._condensers.get(self._current, OutputCondenser()).lines[-12:]:
-                output.add_row(escape(line))
+        output.add_column("Output", no_wrap=True, overflow="ellipsis")
+        stdout_lines = self._condensers[self._current].lines[-self._STDOUT_TAIL :] if self._current else []
+        progress_lines = list(self._progress.get(self._current, deque()))[-self._STDERR_TAIL :] if self._current else []
+        if not stdout_lines and not progress_lines:
+            output.add_row(f"[{muted}]Waiting for output…[/]")
         else:
-            output.add_row("Waiting for first stage...")
+            for line in stdout_lines:
+                output.add_row(escape(line))
+            for line in progress_lines:
+                output.add_row(f"[{muted}]· {escape(line)}[/]")
 
         wrapper = Table.grid(expand=True)
         wrapper.add_row(table)
         wrapper.add_row(output)
-        return Panel(wrapper, title="Running workflow", subtitle="Condensed live output")
+        return Panel(wrapper, title="Running workflow", subtitle="Condensed live output · dim = progress")
 
 
 def _read_key() -> str:
@@ -1924,12 +1963,24 @@ def _print_summary(console: Console, summary: WorkflowSummary) -> None:
 def _print_compact_summary(console: Console, summary: WorkflowSummary) -> None:
     console.print()
     table = _ui_table()
-    table.add_column("Stage")
-    table.add_column("Model Config")
+    table.add_column("Stage", no_wrap=True, overflow="ellipsis")
+    table.add_column("Model Config", no_wrap=True, overflow="ellipsis")
     table.add_column("Exit", justify="right")
     for stage in summary.stages:
         table.add_row(escape(stage.stage_id), escape(stage.tool), str(stage.result.returncode))
     console.print(Panel(table, title="Workflow summary"))
+
+    for stage in summary.stages:
+        preview = condense_extracted(stage.extracted)
+        if not preview:
+            continue
+        console.print(
+            f"[{TUI_THEME['title']}]{escape(stage.stage_id)}[/] "
+            f"[{TUI_THEME['muted']}]({escape(stage.tool)})[/]"
+        )
+        console.print(escape(preview))
+        console.print()
+
     console.print(f"run_dir: {summary.run_dir}")
     console.print(f"plan_path: {summary.plan_path}")
     console.print(f"Full output saved to {summary.run_dir}")

@@ -845,6 +845,28 @@ def test_update_model_config_sets_provider_model_effort(tmp_path, monkeypatch):
     assert config.tools["alpha"]["provider"] == "anthropic"
     assert config.tools["alpha"]["model"] == "claude-sonnet-4.5"
     assert config.tools["alpha"]["effort"] == "high"
+    # "anthropic" is not a known provider, so the hand-written command is preserved.
+    assert config.tools["alpha"]["command"] == [sys.executable, "-c", "print('alpha')"]
+
+
+def test_update_model_config_rebuilds_command_for_known_provider(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    write_stage_config(tmp_path)
+    config = load_config()
+
+    update_model_config(config, "alpha", provider="codex", model="gpt-5.6-sol", effort="high")
+
+    # Editing to a known provider re-routes the command to the selected model and effort.
+    assert config.tools["alpha"]["command"] == [
+        "codex",
+        "exec",
+        "-c",
+        "model_reasoning_effort=high",
+        "-m",
+        "gpt-5.6-sol",
+        "{prompt}",
+    ]
+    assert config.tools["alpha"]["type"] == "codex"
 
 
 def test_add_model_config_creates_provider_tool_config(tmp_path, monkeypatch):
@@ -859,7 +881,7 @@ def test_add_model_config_creates_provider_tool_config(tmp_path, monkeypatch):
         "provider": "grok",
         "model": "grok-build",
         "effort": "high",
-        "command": ["grok", "--single", "{prompt}"],
+        "command": ["grok", "--single", "-m", "grok-build", "--reasoning-effort", "high", "{prompt}"],
         "output": {"format": "text"},
     }
 
@@ -943,7 +965,7 @@ def test_model_config_screen_adds_provider_and_persists_to_home_config(tmp_path,
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr("cli_router.tui.model_options_for_provider", lambda provider: [f"{provider}-model"])
+    monkeypatch.setattr("cli_router.tui.model_options_for_provider", lambda provider, **_: [f"{provider}-model"])
     console = Console(file=open(Path(tmp_path, "tui.txt"), "w", encoding="utf-8"), force_terminal=False)
     keys = iter(
         [
@@ -972,12 +994,20 @@ def test_model_config_screen_adds_provider_and_persists_to_home_config(tmp_path,
     assert saved["tools"]["grok-coder"]["provider"] == "grok"
     assert saved["tools"]["grok-coder"]["model"] == "grok-model"
     assert saved["tools"]["grok-coder"]["effort"] == "high"
-    assert saved["tools"]["grok-coder"]["command"] == ["grok", "--single", "{prompt}"]
+    assert saved["tools"]["grok-coder"]["command"] == [
+        "grok",
+        "--single",
+        "-m",
+        "grok-model",
+        "--reasoning-effort",
+        "high",
+        "{prompt}",
+    ]
 
 
 def test_model_config_screen_adds_when_no_model_configs(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("cli_router.tui.model_options_for_provider", lambda provider: [f"{provider}-model"])
+    monkeypatch.setattr("cli_router.tui.model_options_for_provider", lambda provider, **_: [f"{provider}-model"])
     config = RouterConfig(
         {"version": 1, "tools": {}, "workflows": {"default": {"stages": []}}},
         tmp_path / "cli-router.yaml",
@@ -1078,3 +1108,44 @@ def test_tui_stage_add_persists_to_home_config(tmp_path, monkeypatch):
     saved = config_path.read_text(encoding="utf-8")
     assert "id: review" in saved
     assert "input_template: Review {previous_output}" in saved
+
+
+def _render_observer_to_text(observer, width=80):
+    from io import StringIO
+
+    buffer = StringIO()
+    console = Console(file=buffer, force_terminal=True, width=width, height=24)
+    console.print(observer._render())
+    return buffer.getvalue()
+
+
+def test_observer_surfaces_stderr_progress_and_stage_result_teaser():
+    from cli_router.runner import ToolRunResult
+    from cli_router.tui import _TuiObserver
+    from cli_router.workflows import StageSummary
+
+    observer = _TuiObserver(Console(file=open(os.devnull, "w"), force_terminal=False))
+    observer.stage_started("coder", "codex", 1)
+    # Codex-style progress arrives on stderr with ANSI color that must be stripped.
+    observer.stage_error("coder", "codex", "\x1b[36mapplying patch to runner.py\x1b[0m\n")
+
+    running = _render_observer_to_text(observer)
+    assert "applying patch to runner.py" in running
+    assert "\x1b[36m" not in running  # ANSI stripped from captured progress
+    assert "working" in running  # running stages show a live result placeholder
+
+    result = ToolRunResult(["codex"], 0, "done\n", "", 1.0)
+    finished = StageSummary("coder", "codex", result, extracted="Implemented the timeout fix.\n\nDetails follow.")
+    observer.stage_finished(finished)
+
+    done = _render_observer_to_text(observer, width=120)
+    assert "exit 0" in done
+    assert "Implemented the timeout fix." in done  # first meaningful line as the teaser
+
+
+def test_observer_stage_error_before_start_is_ignored():
+    from cli_router.tui import _TuiObserver
+
+    observer = _TuiObserver(Console(file=open(os.devnull, "w"), force_terminal=False))
+    # No stage started yet — must not raise.
+    observer.stage_error("ghost", "codex", "stray line\n")

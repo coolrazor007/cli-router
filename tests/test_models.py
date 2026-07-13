@@ -5,10 +5,24 @@ from cli_router.models import model_options_for_provider, provider_tool_config
 
 def test_model_options_use_provider_cli_when_available():
     def fake_runner(command, **kwargs):
-        assert command == ["claude", "models"]
-        return subprocess.CompletedProcess(command, 0, "claude-sonnet-4.5\nclaude-opus-4.1\n", "")
+        assert command == ["grok", "models"]
+        return subprocess.CompletedProcess(command, 0, "grok-4.5\ngrok-composer-2.5-fast\n", "")
 
-    assert model_options_for_provider("claude", runner=fake_runner) == ["claude-sonnet-4.5", "claude-opus-4.1"]
+    assert model_options_for_provider("grok", runner=fake_runner) == ["grok-4.5", "grok-composer-2.5-fast"]
+
+
+def test_claude_is_static_only_and_never_shells_out():
+    def exploding_runner(command, **kwargs):
+        raise AssertionError(f"claude discovery must not run a command: {command}")
+
+    # No discovery command is configured for claude, so it resolves straight to
+    # the static fallback without invoking the CLI (which would bill an agent turn).
+    assert model_options_for_provider("claude", runner=exploding_runner) == [
+        "claude-fable-5",
+        "claude-opus-4-8",
+        "claude-sonnet-5",
+        "claude-haiku-4-5",
+    ]
 
 
 def test_codex_model_options_use_debug_catalog_json():
@@ -32,7 +46,7 @@ def test_model_options_fall_back_when_cli_is_unavailable():
     def missing_runner(command, **kwargs):
         raise FileNotFoundError(command[0])
 
-    assert "gpt-5.1" in model_options_for_provider("codex", runner=missing_runner)
+    assert "gpt-5.6-sol" in model_options_for_provider("codex", runner=missing_runner)
 
 
 def test_grok_model_options_use_models_command_output():
@@ -52,6 +66,41 @@ Available models:
             "",
         )
 
+    assert model_options_for_provider("grok", runner=fake_runner) == ["grok-build"]
+
+
+def test_grok_model_options_read_real_banner_and_multiple_models():
+    def fake_runner(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            """You are logged in with grok.com.
+
+Default model: grok-4.5
+
+Available models:
+  * grok-4.5 (default)
+  - grok-composer-2.5-fast
+""",
+            "",
+        )
+
+    assert model_options_for_provider("grok", runner=fake_runner) == ["grok-4.5", "grok-composer-2.5-fast"]
+
+
+def test_grok_banner_words_are_never_parsed_as_models():
+    # A degraded run where the model list is missing and only prose remains.
+    # The old prefix-denylist parser leaked "You" from the login banner; the
+    # slug-shape guard must reject every bare word here.
+    def fake_runner(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            "You are logged in with grok.com.\nERROR Settings fetch failed after 3 attempts\n",
+            "",
+        )
+
+    # No plausible model id -> discovery yields nothing and the caller falls back.
     assert model_options_for_provider("grok", runner=fake_runner) == ["grok-build"]
 
 
@@ -99,7 +148,35 @@ def test_provider_tool_config_uses_provider_command_and_metadata():
     assert tool["provider"] == "claude"
     assert tool["model"] == "claude-sonnet-4.5"
     assert tool["effort"] == "high"
-    assert tool["command"] == ["claude", "-p", "{prompt}"]
+    assert tool["command"] == ["claude", "-p", "--model", "claude-sonnet-4.5", "--effort", "high", "{prompt}"]
+
+
+def test_provider_tool_config_routes_codex_model_and_effort():
+    tool = provider_tool_config("codex", "gpt-5.6-sol", "high")
+
+    assert tool["model"] == "gpt-5.6-sol"
+    # Codex takes reasoning effort as a config override, not a flag.
+    assert tool["command"] == [
+        "codex",
+        "exec",
+        "-c",
+        "model_reasoning_effort=high",
+        "-m",
+        "gpt-5.6-sol",
+        "{prompt}",
+    ]
+
+
+def test_provider_tool_config_routes_grok_effort_flag():
+    tool = provider_tool_config("grok", "grok-4.5", "low")
+
+    assert tool["command"] == ["grok", "--single", "-m", "grok-4.5", "--reasoning-effort", "low", "{prompt}"]
+
+
+def test_provider_tool_config_omits_model_and_effort_when_unset():
+    tool = provider_tool_config("codex", "", "")
+
+    assert tool["command"] == ["codex", "exec", "{prompt}"]
 
 
 def test_provider_tool_config_uses_grok_single_turn_command():
@@ -107,4 +184,12 @@ def test_provider_tool_config_uses_grok_single_turn_command():
 
     assert tool["provider"] == "grok"
     assert tool["model"] == "grok-build"
-    assert tool["command"] == ["grok", "--single", "{prompt}"]
+    assert tool["command"] == [
+        "grok",
+        "--single",
+        "-m",
+        "grok-build",
+        "--reasoning-effort",
+        "medium",
+        "{prompt}",
+    ]

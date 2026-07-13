@@ -5,6 +5,61 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def strip_ansi(text: str) -> str:
+    """Remove ANSI CSI escape sequences (colors, cursor moves, spinners)."""
+    return _ANSI_RE.sub("", text)
+
+
+def first_meaningful_line(text: str | None) -> str:
+    """First non-blank, de-noised line of a stage's output — a one-line teaser.
+
+    Skips Markdown heading markers and blank lines so the teaser is the first
+    real sentence, not ``##`` or empty space.
+    """
+    if not text:
+        return ""
+    for raw in text.splitlines():
+        line = strip_ansi(raw).strip().lstrip("#").strip()
+        if line:
+            return line
+    return ""
+
+
+def condense_extracted(text: str | None, *, max_lines: int = 12, max_chars: int = 900) -> str:
+    """Trim a stage's extracted output to a half-page preview.
+
+    Keeps at most ``max_lines`` non-blank lines and ``max_chars`` characters,
+    collapsing runs of blank lines, and appends a truncation marker when content
+    was dropped so the reader knows the full text lives in the artifacts.
+    """
+    if not text:
+        return ""
+    lines: list[str] = []
+    blank_pending = False
+    truncated = False
+    for raw in text.splitlines():
+        line = strip_ansi(raw).rstrip()
+        if not line.strip():
+            blank_pending = bool(lines)
+            continue
+        if len(lines) >= max_lines:
+            truncated = True
+            break
+        if blank_pending:
+            lines.append("")
+            blank_pending = False
+        lines.append(line)
+    preview = "\n".join(lines)
+    if len(preview) > max_chars:
+        preview = preview[:max_chars].rstrip()
+        truncated = True
+    if truncated:
+        preview = f"{preview}\n…"
+    return preview
+
 
 @dataclass
 class _DiffFile:

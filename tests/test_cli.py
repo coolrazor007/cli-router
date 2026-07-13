@@ -42,6 +42,50 @@ def test_cli_without_command_opens_tui(tmp_path, monkeypatch):
     assert called == {"workflow_name": "default", "prompt": None, "tools": ["generic-coder", "generic-planner", "planner"]}
 
 
+def test_cli_doctor_reports_health_and_fails_on_broken_provider(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    from cli_router.doctor import ProviderHealth
+
+    health = [
+        ProviderHealth("codex", True, True, ["gpt-5.6-sol"], "catalog", "2 models"),
+        ProviderHealth("grok", True, False, [], "none", "did not parse", raw_output="junk", command=["grok", "models"]),
+    ]
+    monkeypatch.setattr(cli, "diagnose", lambda **kwargs: health)
+
+    exit_code = main(["doctor"])
+    out = capsys.readouterr().out
+
+    assert "codex" in out and "ok" in out
+    assert "grok" in out and "drift" in out
+    assert "--repair" in out  # nudges the user toward repair
+    assert exit_code == 1  # a present provider has no models
+
+
+def test_cli_doctor_repair_recovers_and_succeeds(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    from cli_router.doctor import ProviderHealth, RepairResult
+
+    drifting = [
+        ProviderHealth("codex", True, True, ["gpt-5.6-sol"], "catalog", "ok"),
+        ProviderHealth("grok", True, False, [], "none", "drift", raw_output="junk", command=["grok", "models"]),
+    ]
+    recovered = [
+        ProviderHealth("codex", True, True, ["gpt-5.6-sol"], "catalog", "ok"),
+        ProviderHealth("grok", True, False, ["grok-4.5"], "cache", "using 1 cached"),
+    ]
+    states = iter([drifting, recovered])
+    monkeypatch.setattr(cli, "diagnose", lambda **kwargs: next(states))
+    monkeypatch.setattr(
+        cli, "repair", lambda health, **kwargs: [RepairResult("grok", True, ["grok-4.5"], "recovered 1 models via codex", "codex")]
+    )
+
+    exit_code = main(["doctor", "--repair"])
+    out = capsys.readouterr().out
+
+    assert "doctor fixed: grok" in out
+    assert exit_code == 0  # grok now has a (cached) model list
+
+
 def test_cli_config_show_prints_loaded_config(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     Path("cli-router.yaml").write_text(
@@ -167,7 +211,7 @@ def test_cli_run_accepts_explicit_stage_selection(tmp_path, monkeypatch, capsys)
     exit_code = main(["run", "ignored", "--stages", "beta"])
 
     assert exit_code == 0
-    assert "beta: exit 0" in capsys.readouterr().out
+    assert "beta (beta): exit 0" in capsys.readouterr().out
     run_dirs = list(Path(".cli-router/runs").iterdir())
     assert len(run_dirs) == 1
     assert (run_dirs[0] / "beta.stdout").read_text(encoding="utf-8") == "beta\n"

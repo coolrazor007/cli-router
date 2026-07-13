@@ -89,3 +89,87 @@ def test_stream_tool_emits_stdout_lines_and_captures_full_result():
     assert result.stdout == "one\ntwo\n"
     assert result.stderr == "warn\n"
     assert result.duration_seconds >= 0
+
+
+def test_stream_tool_enforces_timeout_on_continuous_output():
+    lines = []
+    started = time.monotonic()
+
+    result = stream_tool(
+        {
+            "command": [
+                sys.executable,
+                "-u",
+                "-c",
+                (
+                    "import sys, time\n"
+                    "deadline = time.monotonic() + 1\n"
+                    "while time.monotonic() < deadline:\n"
+                    "    sys.stdout.write('tick\\n')\n"
+                    "    sys.stdout.flush()\n"
+                ),
+            ],
+            "timeout_seconds": 0.2,
+        },
+        {},
+        on_stdout_line=lines.append,
+    )
+
+    assert time.monotonic() - started < 5
+    assert result.returncode == 124
+    assert "timed out" in result.stderr.lower()
+    assert result.duration_seconds >= 0.2
+    assert lines
+
+
+def test_stream_tool_delivers_stdout_and_stderr_to_separate_callbacks():
+    out_lines = []
+    err_lines = []
+
+    result = stream_tool(
+        {
+            "command": [
+                sys.executable,
+                "-u",
+                "-c",
+                "import sys\nprint('answer')\nsys.stderr.write('progress\\n')\n",
+            ],
+        },
+        {},
+        on_stdout_line=out_lines.append,
+        on_stderr_line=err_lines.append,
+    )
+
+    assert result.returncode == 0
+    assert out_lines == ["answer\n"]
+    assert err_lines == ["progress\n"]
+    assert result.stdout == "answer\n"
+    assert result.stderr == "progress\n"
+
+
+def test_stream_tool_does_not_timeout_after_process_exits_while_draining_output():
+    lines = []
+
+    def slow_first_line(line):
+        lines.append(line)
+        if len(lines) == 1:
+            time.sleep(0.3)
+
+    result = stream_tool(
+        {
+            "command": [
+                sys.executable,
+                "-u",
+                "-c",
+                "import sys\nfor index in range(5):\n    print(f'line-{index}', flush=True)\n",
+            ],
+            "timeout_seconds": 0.2,
+        },
+        {},
+        on_stdout_line=slow_first_line,
+    )
+
+    assert result.returncode == 0
+    assert "timed out" not in result.stderr.lower()
+    assert lines == [f"line-{index}\n" for index in range(5)]
+    assert result.stdout == "".join(lines)
