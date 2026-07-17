@@ -1,5 +1,5 @@
-import sys
 import json
+import sys
 from pathlib import Path
 
 import yaml
@@ -352,6 +352,59 @@ def test_run_workflow_stops_before_coder_on_planner_failure(tmp_path, monkeypatc
 
     assert summary.exit_code == 5
     assert [stage.stage_id for stage in summary.stages] == ["planner"]
+
+
+def test_run_workflow_keeps_first_failure_when_configured_to_continue(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    write_config(
+        tmp_path,
+        "import sys; print('bad'); sys.exit(5)",
+        coder_code="print('later stage succeeded')",
+        stop_on_failure=False,
+    )
+
+    summary = run_workflow(load_config(), "add logging")
+
+    assert [stage.result.returncode for stage in summary.stages] == [5, 0]
+    assert summary.exit_code == 5
+    assert summary.error is not None
+    assert "planner" in summary.error
+
+
+def test_run_workflow_fails_when_no_stages_are_enabled(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    write_config(tmp_path, "import json; print(json.dumps({'result': 'the plan'}))")
+    data = yaml.safe_load(Path("cli-router.yaml").read_text(encoding="utf-8"))
+    for stage in data["workflows"]["default"]["stages"]:
+        stage["enabled"] = False
+    Path("cli-router.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    summary = run_workflow(load_config(), "add logging")
+
+    assert summary.exit_code == 2
+    assert summary.error == "Workflow has no enabled stages"
+    assert summary.stages == []
+    manifest = yaml.safe_load((summary.run_dir / "run.yaml").read_text(encoding="utf-8"))
+    assert manifest["exit_code"] == 2
+    assert manifest["error"] == summary.error
+
+
+def test_implement_workflow_fails_when_no_post_planner_stages_are_enabled(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    write_config(tmp_path, "import json; print(json.dumps({'result': 'the plan'}))")
+    data = yaml.safe_load(Path("cli-router.yaml").read_text(encoding="utf-8"))
+    data["workflows"]["default"]["stages"][1]["enabled"] = False
+    Path("cli-router.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+    Path("PLAN.md").write_text("the plan", encoding="utf-8")
+
+    summary = implement_workflow(load_config(), "default")
+
+    assert summary.exit_code == 2
+    assert summary.error == "Workflow has no enabled post-planner stages"
+    assert summary.stages == []
+    manifest = yaml.safe_load((summary.run_dir / "run.yaml").read_text(encoding="utf-8"))
+    assert manifest["exit_code"] == 2
+    assert manifest["error"] == summary.error
 
 
 def test_run_workflow_surfaces_auth_required_provider_message(tmp_path, monkeypatch):

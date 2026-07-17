@@ -170,7 +170,7 @@ def test_provider_tool_config_routes_codex_model_and_effort():
 def test_provider_tool_config_routes_grok_effort_flag():
     tool = provider_tool_config("grok", "grok-4.5", "low")
 
-    assert tool["command"] == ["grok", "--single", "-m", "grok-4.5", "--reasoning-effort", "low", "{prompt}"]
+    assert tool["command"] == ["grok", "-m", "grok-4.5", "--reasoning-effort", "low", "--single", "{prompt}"]
 
 
 def test_provider_tool_config_omits_model_and_effort_when_unset():
@@ -186,10 +186,16 @@ def test_provider_tool_config_uses_grok_single_turn_command():
     assert tool["model"] == "grok-build"
     assert tool["command"] == [
         "grok",
-        "--single",
         "-m",
         "grok-build",
         "--reasoning-effort",
         "medium",
+        "--single",
         "{prompt}",
     ]
+
+
+def test_provider_tool_config_uses_hermes_oneshot_command():
+    tool = provider_tool_config("hermes", "hermes-auto", "medium")
+
+    assert tool["command"] == ["hermes", "--oneshot", "{prompt}"]

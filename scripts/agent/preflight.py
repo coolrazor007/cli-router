@@ -63,7 +63,7 @@ def main() -> int:
 
     # 1) Kill switch.
     halted = gh_json(["issue", "list", "-R", repo, "--label", HALT_LABEL, "--state", "open", "--json", "number"])
-    if halted:
+    if isinstance(halted, list) and halted and isinstance(halted[0], dict):
         return emit(False, f"paused: open {HALT_LABEL} issue #{halted[0]['number']} (close it to resume)")
 
     # 2) Runaway cap: count agent-created issues AND PRs in the last 24h.

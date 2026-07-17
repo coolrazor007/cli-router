@@ -77,9 +77,9 @@ def _provider_command(provider: str, model: str = "", effort: str = "") -> list[
     if provider == "claude":
         return ["claude", "-p", *_model_flag("--model", model), *_effort_args(provider, effort), "{prompt}"]
     if provider == "hermes":
-        return ["hermes", "run", "{prompt}"]
+        return ["hermes", "--oneshot", "{prompt}"]
     if provider == "grok":
-        return ["grok", "--single", *_model_flag("-m", model), *_effort_args(provider, effort), "{prompt}"]
+        return ["grok", *_model_flag("-m", model), *_effort_args(provider, effort), "--single", "{prompt}"]
     return [provider, "{prompt}"]
 
 

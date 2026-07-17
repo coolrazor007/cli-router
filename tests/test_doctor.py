@@ -11,7 +11,6 @@ from cli_router.doctor import (
 )
 from cli_router.modelcache import ModelCache
 
-
 CODEX_CATALOG = '{"models":[{"slug":"gpt-5.6-sol","visibility":"list"},{"slug":"gpt-5.5","visibility":"list"}]}'
 GROK_DRIFT = "You are logged in with grok.com.\nSomething entirely new here.\n"
 
@@ -98,6 +97,12 @@ def test_candidate_backends_are_sorted_cache_first_and_skip_missing():
     assert "grok:grok-4.5" in labels
     assert labels.index("grok:grok-4.5") < labels.index("grok:grok-build")
     assert not any(label.startswith(("claude:", "hermes:")) for label in labels)
+
+
+def test_candidate_backends_skip_providers_without_tool_free_mode():
+    backends = candidate_backends(("hermes",), which=lambda exe: "/usr/bin/" + exe)
+
+    assert backends == []
 
 
 # --- repair with backend failover ----------------------------------------
@@ -205,12 +210,67 @@ def test_run_agent_routes_model_and_returns_stdout():
 
     def runner(command, **kwargs):
         seen["argv"] = command
+        seen["cwd"] = kwargs.get("cwd")
+        seen["env"] = kwargs.get("env", {})
         return subprocess.CompletedProcess(command, 0, "hello", "")
 
     out = run_agent(Backend("codex", "gpt-5.6-sol"), "PROMPT", runner)
 
     assert out == "hello"
-    assert seen["argv"] == ["codex", "exec", "-m", "gpt-5.6-sol", "PROMPT"]
+    assert seen["argv"] == [
+        "codex",
+        "exec",
+        "--sandbox",
+        "read-only",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "--ignore-rules",
+        "-m",
+        "gpt-5.6-sol",
+        "PROMPT",
+    ]
+    assert seen["cwd"] != "."
+    assert "GH_TOKEN" not in seen["env"]
+    assert "GITHUB_TOKEN" not in seen["env"]
+
+
+def test_doctor_claude_backend_disables_tools():
+    command = Backend("claude", "claude-sonnet-5").command("PROMPT")
+
+    assert command == [
+        "claude",
+        "-p",
+        "--model",
+        "claude-sonnet-5",
+        "--tools",
+        "",
+        "--permission-mode",
+        "plan",
+        "--no-session-persistence",
+        "--safe-mode",
+        "PROMPT",
+    ]
+
+
+def test_doctor_grok_backend_places_single_turn_prompt_after_options():
+    command = Backend("grok", "grok-4.5").command("PROMPT")
+
+    assert command == [
+        "grok",
+        "-m",
+        "grok-4.5",
+        "--tools",
+        "",
+        "--permission-mode",
+        "plan",
+        "--no-memory",
+        "--no-subagents",
+        "--disable-web-search",
+        "--max-turns",
+        "1",
+        "--single",
+        "PROMPT",
+    ]
 
 
 # --- extract_json_array ---------------------------------------------------

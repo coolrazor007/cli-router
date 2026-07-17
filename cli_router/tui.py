@@ -7,8 +7,8 @@ import re
 import signal
 import sys
 from collections import deque
-from copy import deepcopy
 from contextlib import nullcontext
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable, TypeVar
 
@@ -20,11 +20,10 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .config import RouterConfig, save_config, user_config_path
-from .models import PROVIDERS, _provider_command, model_options_for_provider, provider_tool_config
 from .modelcache import ModelCache
+from .models import PROVIDERS, _provider_command, model_options_for_provider, provider_tool_config
 from .streamfmt import OutputCondenser, condense_extracted, first_meaningful_line, strip_ansi
 from .workflows import StageSummary, WorkflowSummary, run_workflow
-
 
 KeyReader = Callable[[], str]
 T = TypeVar("T")
@@ -164,7 +163,7 @@ def run_tui(
 ) -> int:
     console = console or Console()
     read_key = read_key or _read_key
-    prompt = prompt or ""
+    current_prompt = prompt or ""
     persistent = _should_persist(config)
     screen_context = console.screen() if console.is_terminal else nullcontext()
     screen_active = False
@@ -210,7 +209,7 @@ def run_tui(
                     if key in {"q", "Q", "\x1b"}:
                         return 0
                     continue
-                _render_main_menu(console, workflow_name, prompt, menu_items, cursor)
+                _render_main_menu(console, workflow_name, current_prompt, menu_items, cursor)
                 key = _read_tui_key(read_key)
                 if key in {"q", "Q", "\x1b"}:
                     return 0
@@ -236,7 +235,7 @@ def run_tui(
                     result = _run_workflow_screen(
                         config,
                         workflow_name,
-                        prompt,
+                        current_prompt,
                         console,
                         read_key,
                         persistent,
@@ -246,12 +245,13 @@ def run_tui(
                         return result
                     continue
                 if choice == "Prompt":
-                    prompt = _run_text_input(console, "Prompt", read_key)
-                    if prompt is None:
+                    entered_prompt = _run_text_input(console, "Prompt", read_key)
+                    if entered_prompt is None:
                         continue
+                    current_prompt = entered_prompt
                     leave_screen()
                     console.show_cursor(True)
-                    summary = _run_workflow_with_feedback(config, workflow_name, prompt, console)
+                    summary = _run_workflow_with_feedback(config, workflow_name, current_prompt, console)
                     return summary.exit_code
                 if choice == "Stage configuration":
                     result = _run_stage_configuration_screen(config, workflow_name, console, read_key, persistent)
@@ -282,13 +282,13 @@ class _TuiSignalHandlers:
         enabled: bool,
         enter_screen: Callable[[], None],
         leave_screen: Callable[[], None],
-        show_cursor: Callable[[bool], None],
+        show_cursor: Callable[[bool], object],
     ) -> None:
         self.enabled = enabled
         self.enter_screen = enter_screen
         self.leave_screen = leave_screen
         self.show_cursor = show_cursor
-        self._old_handlers: dict[int, signal.Handlers] = {}
+        self._old_handlers: dict[int, Any] = {}
 
     def __enter__(self) -> _TuiSignalHandlers:
         if not self.enabled:
@@ -618,15 +618,14 @@ def add_session_stage(
 
 
 def _should_persist(config: RouterConfig) -> bool:
-    # Persist TUI edits back to whatever config is in use: the project-local
-    # cli-router.yaml, an explicit --config path, or the user config. A missing
-    # source means we will create the user config on first write.
-    return True
+    if config.source is None:
+        return True
+    return config.source.resolve() == user_config_path().resolve()
 
 
 def _persist_if_needed(config: RouterConfig, persistent: bool) -> None:
     if persistent:
-        save_config(config, config.source)
+        save_config(config, user_config_path())
 
 
 def _configure_first_run(config: RouterConfig, providers: list[str]) -> None:
@@ -1935,9 +1934,10 @@ def _read_escape_sequence(fd: int, read_char: Callable[[], str], first: str, tim
 def _read_windows_key() -> str:
     import msvcrt
 
-    first = msvcrt.getwch()
+    getwch = getattr(msvcrt, "getwch")
+    first = getwch()
     if first in {"\x00", "\xe0"}:
-        second = msvcrt.getwch()
+        second = getwch()
         if second == "H":
             return "\x1b[A"
         if second == "P":

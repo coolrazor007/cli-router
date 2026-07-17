@@ -3,7 +3,7 @@ tools:
     type: hermes
     command:
       - hermes
-      - run
+      - --oneshot
       - "{prompt}"
     output:
       format: text

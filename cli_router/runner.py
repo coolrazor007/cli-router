@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
+import signal
 import subprocess
 import threading
 import time
@@ -30,20 +32,17 @@ def run_tool(tool: Mapping[str, Any], variables: Mapping[str, Any]) -> ToolRunRe
     timeout_seconds = _timeout_seconds(tool.get("timeout_seconds"))
 
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             rendered,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            check=False,
-            timeout=timeout_seconds,
+            **_process_group_options(),
         )
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout or ""
-        stderr = exc.stderr or ""
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode(errors="replace")
-        if isinstance(stderr, bytes):
-            stderr = stderr.decode(errors="replace")
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(process)
+        stdout, stderr = process.communicate()
         stderr += f"Command timed out after {timeout_seconds:g} seconds\n"
         return ToolRunResult(rendered, 124, stdout, stderr, _elapsed(started))
     except FileNotFoundError:
@@ -51,7 +50,7 @@ def run_tool(tool: Mapping[str, Any], variables: Mapping[str, Any]) -> ToolRunRe
     except OSError as exc:
         return ToolRunResult(rendered, 126, "", f"Failed to run command: {exc}\n", _elapsed(started))
 
-    return ToolRunResult(rendered, completed.returncode, completed.stdout, completed.stderr, _elapsed(started))
+    return ToolRunResult(rendered, process.returncode or 0, stdout, stderr, _elapsed(started))
 
 
 def stream_tool(
@@ -82,6 +81,7 @@ def stream_tool(
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            **_process_group_options(),
         )
     except FileNotFoundError:
         return ToolRunResult(rendered, 127, "", f"Command not found: {rendered[0]}\n", _elapsed(started))
@@ -124,8 +124,7 @@ def stream_tool(
             and time.monotonic() - started >= timeout_seconds
         ):
             timed_out = True
-            process.kill()
-            process.wait()
+            _kill_process_tree(process)
             break
         try:
             name, line = output_queue.get(timeout=0.05)
@@ -203,6 +202,31 @@ def _timeout_seconds(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return timeout if timeout > 0 else None
+
+
+def _process_group_options() -> dict[str, Any]:
+    if os.name == "posix":
+        return {"start_new_session": True}
+    if os.name == "nt":
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {}
+
+
+def _kill_process_tree(process: subprocess.Popen[str]) -> None:
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    elif os.name == "nt" and process.poll() is None:
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+        )
+    if process.poll() is None:
+        process.kill()
+    process.wait()
 
 
 def _elapsed(started: float) -> float:

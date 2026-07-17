@@ -130,9 +130,9 @@ class OutputCondenser:
             return False
 
         if text.startswith("+++ "):
-            path = _path_from_marker(text, "+++ ")
-            if path and (self._diff_file is None or self._diff_file.path != path):
-                self._start_diff_file(path)
+            marker_path = _path_from_marker(text, "+++ ")
+            if marker_path and (self._diff_file is None or self._diff_file.path != marker_path):
+                self._start_diff_file(marker_path)
             return True
         if text.startswith("--- ") or text.startswith("@@"):
             return True

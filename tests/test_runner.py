@@ -1,5 +1,8 @@
+import os
 import sys
 import time
+
+import pytest
 
 from cli_router.runner import _placeholder_pattern, render_placeholders, run_tool, stream_tool
 
@@ -67,6 +70,48 @@ def test_runner_reports_timeout_as_nonzero_result():
     assert result.returncode == 124
     assert "timed out" in result.stderr.lower()
     assert result.duration_seconds >= 0.1
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group behavior")
+@pytest.mark.parametrize("runner", [run_tool, stream_tool])
+def test_timeout_kills_descendant_processes(tmp_path, runner):
+    marker = tmp_path / "descendant-finished"
+    child = (
+        "import time; from pathlib import Path; "
+        f"time.sleep(0.4); Path({str(marker)!r}).write_text('survived')"
+    )
+    parent = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {child!r}]); "
+        "time.sleep(10)"
+    )
+
+    result = runner(
+        {"command": [sys.executable, "-c", parent], "timeout_seconds": 0.1},
+        {},
+    )
+    time.sleep(0.6)
+
+    assert result.returncode == 124
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group behavior")
+def test_timeout_kills_descendant_when_parent_has_already_exited(tmp_path):
+    marker = tmp_path / "orphan-finished"
+    child = (
+        "import time; from pathlib import Path; "
+        f"time.sleep(0.4); Path({str(marker)!r}).write_text('survived')"
+    )
+    parent = "import subprocess, sys; " f"subprocess.Popen([sys.executable, '-c', {child!r}])"
+
+    result = run_tool(
+        {"command": [sys.executable, "-c", parent], "timeout_seconds": 0.1},
+        {},
+    )
+
+    assert result.returncode == 124
+    assert not marker.exists()
 
 
 def test_stream_tool_emits_stdout_lines_and_captures_full_result():
