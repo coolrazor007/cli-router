@@ -27,11 +27,14 @@ reuse it with a different task.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+import tempfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
+from .modelcache import ModelCache
 from .models import (
     DEFAULT_MODELS,
     MODEL_LIST_COMMANDS,
@@ -42,13 +45,13 @@ from .models import (
     _provider_command,
     probe_models,
 )
-from .modelcache import ModelCache
 
 # Discovery during diagnosis is a deliberate setup/repair action, so it can wait
 # longer than the snappy interactive picker for a slow CLI to cold-start.
 DISCOVERY_TIMEOUT_SECONDS = 10.0
 # The doctor agent may need to read a long, messy CLI dump and think about it.
 DOCTOR_TIMEOUT_SECONDS = 120.0
+SAFE_DOCTOR_PROVIDERS = frozenset({"codex", "claude", "grok"})
 
 WhichFn = Callable[[str], str | None]
 # (backend) -> recovered model ids; raises DoctorError when the backend fails.
@@ -76,8 +79,48 @@ class Backend:
         return f"{self.provider}:{self.model or 'default'}"
 
     def command(self, prompt: str) -> list[str]:
-        argv = _provider_command(self.provider, self.model)
-        return [prompt if part == "{prompt}" else part for part in argv]
+        if self.provider == "codex":
+            return [
+                "codex",
+                "exec",
+                "--sandbox",
+                "read-only",
+                "--ephemeral",
+                "--skip-git-repo-check",
+                "--ignore-rules",
+                *(["-m", self.model] if self.model else []),
+                prompt,
+            ]
+        if self.provider == "claude":
+            return [
+                "claude",
+                "-p",
+                *(["--model", self.model] if self.model else []),
+                "--tools",
+                "",
+                "--permission-mode",
+                "plan",
+                "--no-session-persistence",
+                "--safe-mode",
+                prompt,
+            ]
+        if self.provider == "grok":
+            return [
+                "grok",
+                *(["-m", self.model] if self.model else []),
+                "--tools",
+                "",
+                "--permission-mode",
+                "plan",
+                "--no-memory",
+                "--no-subagents",
+                "--disable-web-search",
+                "--max-turns",
+                "1",
+                "--single",
+                prompt,
+            ]
+        raise DoctorError(f"{self.provider} has no tool-free doctor mode")
 
 
 @dataclass(frozen=True)
@@ -202,12 +245,18 @@ def candidate_backends(
     which = which or _default_which
     backends: list[Backend] = []
     for provider in sorted(providers):
+        if provider not in SAFE_DOCTOR_PROVIDERS:
+            continue
         if which(_executable(provider)) is None:
             continue
         models = list(cache.get(provider)) if cache is not None else []
         models += list(DEFAULT_MODELS.get(provider, []))
         seen: set[str] = set()
-        ordered = [m for m in models if not (m in seen or seen.add(m))]
+        ordered: list[str] = []
+        for model in models:
+            if model not in seen:
+                seen.add(model)
+                ordered.append(model)
         for model in ordered or [""]:
             backends.append(Backend(provider, model))
     return backends
@@ -243,7 +292,9 @@ def repair(
     selector = _BackendSelector(chain)
     reports: list[RepairResult] = []
     for h in drifting:
-        task: BackendTask = lambda backend, health=h: _extract_models_for(backend, health, runner)
+        def task(backend: Backend, health: ProviderHealth = h) -> list[str]:
+            return _extract_models_for(backend, health, runner)
+
         try:
             backend, models = selector.run(task, cancelled)
         except (DoctorCancelled, KeyboardInterrupt):
@@ -345,15 +396,27 @@ def run_agent(
     so the selector can fail over to the next candidate.
     """
     argv = backend.command(prompt)
+    env = os.environ.copy()
+    for name in (
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "ACTIONS_RUNTIME_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+    ):
+        env.pop(name, None)
     try:
-        completed = runner(
-            argv,
-            capture_output=True,
-            text=True,
-            check=False,
-            stdin=subprocess.DEVNULL,
-            timeout=timeout,
-        )
+        with tempfile.TemporaryDirectory(prefix="cli-router-doctor-") as working_dir:
+            completed = runner(
+                argv,
+                capture_output=True,
+                text=True,
+                check=False,
+                stdin=subprocess.DEVNULL,
+                timeout=timeout,
+                cwd=working_dir,
+                env=env,
+            )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise DoctorError(f"{backend.label} did not run: {exc}") from exc
     if completed.returncode != 0:

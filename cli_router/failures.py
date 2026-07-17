@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from .runner import ToolRunResult
 
-
 USAGE_LIMIT_PATTERNS = (
     "usage limit",
     "session limit",

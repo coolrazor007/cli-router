@@ -1,8 +1,8 @@
 name: Agent drift watchdog
 
-# Scheduled loop: run `cli-router doctor` on the self-hosted runner (which has
-# the authenticated provider CLIs), and if a shipped fallback model has been
-# retired upstream, have a local agent open a PR that fixes DEFAULT_MODELS.
+# Scheduled loop: inspect live model catalogs on the self-hosted runner. A
+# single-runner removal opens an advisory issue; only a maintainer-confirmed
+# manual run may invoke the local patch agent and open a review-required PR.
 #
 # SECURITY: this runs on a self-hosted runner that holds your subscription
 # credentials. It is triggered ONLY by the schedule or a maintainer clicking
@@ -15,14 +15,15 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Detect drift only; do not patch or open a PR"
+        description: "Detect and report drift only; do not patch or open a PR"
+        type: boolean
+        default: true
+      confirm_removals:
+        description: "Confirm this runner's missing models should be patched"
         type: boolean
         default: false
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
+permissions: {}
 
 concurrency:
   group: agent-drift-watchdog
@@ -32,10 +33,15 @@ jobs:
   preflight:
     runs-on: [self-hosted, mothership]
     timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
     outputs:
       proceed: ${{ steps.gate.outputs.proceed }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
       - id: gate
         name: Circuit breaker + kill switch
         env:
@@ -49,27 +55,69 @@ jobs:
     if: needs.preflight.outputs.proceed == 'true'
     runs-on: [self-hosted, mothership]
     timeout-minutes: 30
-    env:
-      GH_TOKEN: ${{ github.token }}
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      patch_ready: ${{ steps.package.outputs.patch_ready }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
 
-      - name: Install cli-router
-        run: python3 -m pip install -e .
+      - name: Install cli-router in an isolated environment
+        run: |
+          python3 -m venv "$RUNNER_TEMP/cli-router-venv"
+          "$RUNNER_TEMP/cli-router-venv/bin/python" -m pip install -e .
+          echo "$RUNNER_TEMP/cli-router-venv/bin" >> "$GITHUB_PATH"
 
       - name: Detect drift
         id: detect
+        env:
+          CONFIRM_REMOVALS: ${{ inputs.confirm_removals || 'false' }}
         run: |
-          python3 scripts/agent/detect_drift.py --timeout 15 | tee drift.json
+          confirm_arg=""
+          if [ "$CONFIRM_REMOVALS" = "true" ]; then
+            confirm_arg="--confirm-removals"
+          fi
+          python3 scripts/agent/detect_drift.py --timeout 15 $confirm_arg | tee drift.json
           drift=$(python3 -c "import json; print(str(json.load(open('drift.json'))['drift']).lower())")
+          candidate=$(python3 -c "import json; print(str(json.load(open('drift.json'))['candidate_drift']).lower())")
           echo "drift=$drift" >> "$GITHUB_OUTPUT"
+          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
 
-      - name: No actionable drift
-        if: steps.detect.outputs.drift != 'true'
+      - name: No candidate drift
+        if: steps.detect.outputs.candidate != 'true'
         run: echo "No retired shipped models. Nothing to do."
 
+      - name: Report candidate drift for maintainer confirmation
+        if: steps.detect.outputs.candidate == 'true' && steps.detect.outputs.drift != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create agent-drift --color 1d76db --description "Model-list drift candidate" --force
+          existing=$(gh issue list --label agent-drift --state open --json number --jq '.[0].number')
+          body="$(cat drift.json)"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Fresh single-runner observation; confirmation is still required:
+
+          \`\`\`json
+          $body
+          \`\`\`"
+          else
+            gh issue create --label agent-created --label agent-drift \
+              --title "Provider model-list drift requires confirmation" \
+              --body "One runner observed a shipped fallback model missing. This can vary by account or CLI version, so no patch was applied.
+
+          Re-run this workflow manually with \`confirm_removals=true\` after verification.
+
+          \`\`\`json
+          $body
+          \`\`\`"
+          fi
+
       - name: Dry run — report only
-        if: steps.detect.outputs.drift == 'true' && inputs.dry_run == true
+        if: steps.detect.outputs.candidate == 'true' && inputs.dry_run == true
         run: |
           echo "Drift found; dry_run=true, not patching:"
           cat drift.json
@@ -80,30 +128,119 @@ jobs:
         if: steps.detect.outputs.drift == 'true' && inputs.dry_run != true
         run: python3 scripts/agent/build_prompt.py drift.json | tee patch_prompt.txt
 
+      - name: Create isolated patch branch
+        if: steps.detect.outputs.drift == 'true' && inputs.dry_run != true
+        run: |
+          git switch -c "agent/drift-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git config --local credential.helper ""
+
+      - name: Reject persistent runner GitHub authentication
+        if: steps.detect.outputs.drift == 'true' && inputs.dry_run != true
+        run: |
+          if env -u GH_TOKEN -u GITHUB_TOKEN -u GH_CONFIG_DIR gh auth status >/dev/null 2>&1; then
+            echo "Persistent gh authentication is available to the runner user; refusing to launch the patch agent." >&2
+            exit 1
+          fi
+
       - name: Apply fix with local agent
         if: steps.detect.outputs.drift == 'true' && inputs.dry_run != true
-        run: bash scripts/agent/apply_drift_fix.sh patch_prompt.txt
-
-      - name: Verify — full test suite must pass
-        if: steps.detect.outputs.drift == 'true' && inputs.dry_run != true
-        run: python3 -m pytest -q
-
-      - name: Open PR (auto-merge if enabled)
-        if: steps.detect.outputs.drift == 'true' && inputs.dry_run != true
         env:
-          AUTOMERGE: ${{ vars.AGENT_DRIFT_AUTOMERGE || 'false' }}
+          GH_CONFIG_DIR: ${{ runner.temp }}/cli-router-empty-gh
+        run: |
+          mkdir -p "$GH_CONFIG_DIR"
+          env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN \
+            -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL \
+            bash scripts/agent/apply_drift_fix.sh patch_prompt.txt
+
+      - name: Validate agent patch scope
+        if: steps.detect.outputs.drift == 'true' && inputs.dry_run != true
+        run: python3 scripts/agent/validate_patch.py
+
+      - id: package
+        name: Package the validated patch
+        if: steps.detect.outputs.drift == 'true' && inputs.dry_run != true
         run: |
           set -euo pipefail
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "Agent produced no file changes; opening no PR."
-            exit 0
-          fi
+          git diff --binary HEAD -- CHANGELOG.md cli_router/models.py tests/test_models.py > "$RUNNER_TEMP/drift.patch"
+          test -s "$RUNNER_TEMP/drift.patch"
+          echo "patch_ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the validated patch
+        if: steps.package.outputs.patch_ready == 'true'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: validated-drift-patch
+          path: ${{ runner.temp }}/drift.patch
+          if-no-files-found: error
+          retention-days: 1
+
+  verify_patch:
+    needs: drift
+    if: needs.drift.outputs.patch_ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: validated-drift-patch
+          path: ${{ runner.temp }}
+
+      - name: Apply and validate the isolated patch
+        run: |
+          git apply "$RUNNER_TEMP/drift.patch"
+          python3 scripts/agent/validate_patch.py
+
+      - name: Verify in an ephemeral read-only job
+        run: |
+          python -m pip install -e .
+          python -m pytest -q
+
+  publish:
+    needs: [drift, verify_patch]
+    if: needs.drift.outputs.patch_ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: validated-drift-patch
+          path: ${{ runner.temp }}
+
+      - name: Apply the verified patch
+        run: |
+          git apply "$RUNNER_TEMP/drift.patch"
+          python3 scripts/agent/validate_patch.py
+
+      - name: Open review-required PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
           git config user.name "cli-router-agent[bot]"
           git config user.email "cli-router-agent@users.noreply.github.com"
-          branch="agent/drift-$(date -u +%Y%m%d-%H%M%S)"
+          branch="agent/drift-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           git switch -c "$branch"
-          git add -A
-          git commit -m "Fix provider model-list drift (automated)"
+          git add -- cli_router/models.py tests/test_models.py CHANGELOG.md
+          git -c core.hooksPath=/dev/null commit -m "Fix provider model-list drift (automated)"
           git push -u origin "$branch"
 
           # Ensure labels exist (ignore errors if already created).
@@ -113,17 +250,6 @@ jobs:
           url=$(gh pr create \
             --title "Fix provider model-list drift" \
             --body "Automated by the drift watchdog. \`cli-router doctor\` found a retired shipped model; this updates \`DEFAULT_MODELS\`, the test, and the changelog. The full test suite passed on the runner.
-
-          Drift detected:
-          \`\`\`json
-          $(cat drift.json)
-          \`\`\`" \
+          The self-hosted runner supplied only a validated three-file patch; publication ran in this isolated GitHub-hosted job." \
             --label agent-created --label agent-drift)
           echo "Opened $url"
-
-          if [ "$AUTOMERGE" = "true" ]; then
-            echo "Auto-merge enabled — merging."
-            gh pr merge "$url" --squash --delete-branch
-          else
-            echo "Auto-merge disabled (set repo variable AGENT_DRIFT_AUTOMERGE=true to enable). PR left for review."
-          fi

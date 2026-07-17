@@ -32,14 +32,16 @@ def configure_logging(config: RouterConfig) -> logging.Logger:
     logger.setLevel(_log_level(config))
     logger.propagate = False
 
-    for handler in list(logger.handlers):
-        if not getattr(handler, "_cli_router_log_handler", False):
+    for existing_handler in list(logger.handlers):
+        if not getattr(existing_handler, "_cli_router_log_handler", False):
             continue
-        if getattr(handler, "_cli_router_log_path", None) == str(log_path) and not isinstance(handler, logging.NullHandler):
-            handler.setLevel(logger.level)
+        if getattr(existing_handler, "_cli_router_log_path", None) == str(log_path) and not isinstance(
+            existing_handler, logging.NullHandler
+        ):
+            existing_handler.setLevel(logger.level)
             return logger
-        logger.removeHandler(handler)
-        handler.close()
+        logger.removeHandler(existing_handler)
+        existing_handler.close()
 
     try:
         log_dir.mkdir(parents=True, exist_ok=True)

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Made workflow outcomes fail closed: `run` and `implement` now reject empty resolved stage lists, and `stop_on_failure: false` preserves the first failed stage as the overall result even when later stages succeed.
+- Terminate the full subprocess process group on command timeout so provider helper processes do not survive an exit `124`.
+- Restored home-config-only TUI persistence; project-local and explicit configuration files are no longer silently rewritten.
+- Updated generated Hermes commands to the current non-interactive `hermes --oneshot` interface and corrected Grok `--single` argument ordering.
+- Hardened Doctor repair backends to run tool-free/read-only from an isolated temporary directory without GitHub repository tokens; providers without a safe tool-free mode are excluded.
+- Changed model drift removals to require explicit maintainer confirmation, isolated the patch agent from GitHub credentials, added a strict patch-file allowlist, and removed auto-merge from the watchdog.
+- Added release identity validation, Python 3.14 CI, Ruff, mypy, actionlint, branch-aware coverage, package checks, script tests, and Dependabot configuration.
+
 ## 0.3.0 - 2026-07-13
 
 - Added a `doctor` feature (`cli-router doctor`, `--repair`) to catch agent-CLI drift over time. `doctor` reports each provider's discovery health (CLI present? live model list parses?). With `--repair`, when a provider's CLI is installed and responding but its model list no longer parses, Doctor uses a working agent as an LLM parser — it runs the sick provider's own list command itself, hands only the raw text to the agent, and expects back a JSON array of model ids (LLM-as-parser, never LLM-as-operator). Recovered lists are written to `~/.cli-router/model-cache.yaml` (`cli_router.modelcache.ModelCache`), which layers between live discovery and the static `DEFAULT_MODELS` fallback, so the fix survives across runs without editing source. Model discovery and the TUI model pickers now consult that cache.

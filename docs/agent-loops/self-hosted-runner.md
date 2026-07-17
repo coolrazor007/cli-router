@@ -17,6 +17,10 @@ can't carry.
 ## 1. Prerequisites on Mothership
 
 - `python3` (3.10+), `git`, and the [`gh`](https://cli.github.com/) CLI.
+- The dedicated runner user must **not** have a persistent `gh auth login` or
+  GitHub Git credential. The workflow supplies short-lived tokens only to its
+  trusted reporting/publishing steps and refuses to start the patch agent when
+  a stored `gh` login is detected.
 - The provider CLIs installed **and logged in as the runner user**:
   `claude`, `codex`, `grok`.
 - Verify headless, non-interactive auth **as the user the runner will run as**:
@@ -62,9 +66,14 @@ CLI-authenticated user** (so `$HOME` resolves to the logged-in config), e.g.
 - **Require approval for fork PRs.** Settings → Actions → General → *Fork pull
   request workflows from outside collaborators* → **Require approval for all
   external contributors** (and prefer "all fork pull requests").
-- **Least privilege.** The workflow requests only `contents`, `pull-requests`,
-  and `issues` write. The provider credentials never enter a prompt — the agent
-  step only receives the drift report.
+- **Least privilege.** Checkout does not persist Git credentials, and GitHub
+  tokens are scoped to the preflight and issue-reporting steps. The patch agent
+  receives no GitHub or Actions token; it runs on an unpublished local branch,
+  and `validate_patch.py` rejects changes outside the three expected files. A
+  short-lived patch artifact then crosses into ephemeral GitHub-hosted jobs.
+  The first runs the generated code with read-only repository permission; only
+  after it passes does a separate job receive permission to push and open the
+  PR. Generated code never executes with repository write access.
 - **Isolate.** A dedicated user (above), and ideally a VM/container with limited
   outbound network, so a compromised run can't reach the rest of Mothership.
 
@@ -76,7 +85,6 @@ Variables) — not secrets:
 | Variable | Default | Meaning |
 |---|---|---|
 | `AGENT_DAILY_CAP` | `10` | Runaway breaker: pause all loops if this many agent issues+PRs are created in 24h. |
-| `AGENT_DRIFT_AUTOMERGE` | `false` | When `true`, the watchdog merges its own PR after tests pass. Start `false` (PR-only). |
 
 Labels (`agent-halt`, `agent-created`, `agent-drift`) are created automatically
 on first run.
@@ -102,10 +110,12 @@ watchdog* → ⋯ → **Disable workflow** (or `gh workflow disable "Agent drift
 1. **Dry run** (detect only, no changes): Actions → *Agent drift watchdog* →
    Run workflow → `dry_run: true`. Confirm the runner picks it up and the
    detector prints a verdict.
-2. **Live, PR-only** (`AGENT_DRIFT_AUTOMERGE=false`): Run workflow with
-   `dry_run: false`. If drift exists, it opens a PR you review.
-3. **Enable auto-merge** only once you trust it: set
-   `AGENT_DRIFT_AUTOMERGE=true`.
+2. **Review the candidate:** scheduled and default manual runs only create or
+   update an advisory issue because catalogs can differ by account or CLI
+   version.
+3. **Confirmed PR-only fix:** after independent verification, run manually with
+   `confirm_removals: true` and `dry_run: false`. The workflow opens a PR that
+   always requires normal review and branch checks; it never auto-merges.
 
 ## What runs where
 
@@ -115,4 +125,7 @@ watchdog* → ⋯ → **Disable workflow** (or `gh workflow disable "Agent drift
 | `scripts/agent/preflight.py` | runner | Circuit breaker + kill switch (uses `gh`). |
 | `scripts/agent/build_prompt.py` | runner | Turns the drift verdict into a bounded prompt. |
 | `scripts/agent/apply_drift_fix.sh` | runner | **Tune this** to your local agent CLI/flags. |
-| `.github/workflows/agent-drift-watchdog.yml` | orchestration | Trusted triggers only. |
+| `scripts/agent/validate_patch.py` | runner | Rejects any patch outside models, its focused test, and the changelog. |
+| Patch verification | GitHub-hosted runner | Applies the patch and runs the full suite with read-only repository permission. |
+| Patch publication | GitHub-hosted runner | Reapplies the verified artifact, pushes, and opens the review-required PR without executing generated code. |
+| `.github/workflows/agent-drift-watchdog.yml` | orchestration | Trusted triggers only; separates local agent execution from publication credentials. |

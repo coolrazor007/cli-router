@@ -12,6 +12,9 @@ from cli_router.config import RouterConfig, load_config, user_config_path
 from cli_router.tui import (
     ModelConfigOption,
     PromptVariableError,
+    _read_escape_sequence,
+    _read_posix_key,
+    _read_utf8_char,
     add_model_config,
     add_session_stage,
     insert_stage,
@@ -21,9 +24,6 @@ from cli_router.tui import (
     normalize_prompt_template,
     prompt_preview,
     remove_stage,
-    _read_escape_sequence,
-    _read_posix_key,
-    _read_utf8_char,
     run_tui,
     selected_stage_names,
     set_stage_model_config,
@@ -556,7 +556,7 @@ def test_tui_reorder_updates_workflow_stage_order(tmp_path, monkeypatch):
     assert [stage["id"] for stage in config.workflows["default"]["stages"]] == ["beta", "alpha"]
 
 
-def test_tui_reorder_persists_to_project_config(tmp_path, monkeypatch):
+def test_tui_reorder_does_not_persist_to_project_config(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     write_stage_config(tmp_path)
@@ -568,8 +568,7 @@ def test_tui_reorder_persists_to_project_config(tmp_path, monkeypatch):
     run_tui(load_config(), workflow_name="default", prompt="ignored", console=console, read_key=lambda: next(keys))
 
     saved = yaml.safe_load(project_config.read_text(encoding="utf-8"))
-    assert [stage["id"] for stage in saved["workflows"]["default"]["stages"]] == ["beta", "alpha"]
-    # The edit is written back to the project config, not the user config.
+    assert [stage["id"] for stage in saved["workflows"]["default"]["stages"]] == ["alpha", "beta"]
     assert not (tmp_path / "home" / ".cli-router" / "config.yaml").exists()
 
 
@@ -881,7 +880,7 @@ def test_add_model_config_creates_provider_tool_config(tmp_path, monkeypatch):
         "provider": "grok",
         "model": "grok-build",
         "effort": "high",
-        "command": ["grok", "--single", "-m", "grok-build", "--reasoning-effort", "high", "{prompt}"],
+        "command": ["grok", "-m", "grok-build", "--reasoning-effort", "high", "--single", "{prompt}"],
         "output": {"format": "text"},
     }
 
@@ -996,11 +995,11 @@ def test_model_config_screen_adds_provider_and_persists_to_home_config(tmp_path,
     assert saved["tools"]["grok-coder"]["effort"] == "high"
     assert saved["tools"]["grok-coder"]["command"] == [
         "grok",
-        "--single",
         "-m",
         "grok-model",
         "--reasoning-effort",
         "high",
+        "--single",
         "{prompt}",
     ]
 

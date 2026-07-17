@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
-import logging
 from pathlib import Path
-import time
 from typing import Any, Protocol, Sequence
 
 from .artifacts import create_run_dir, write_run_manifest, write_stage_artifacts
@@ -96,6 +96,11 @@ def implement_workflow(
         return summary
 
     stages = _named_stages(workflow, stage_names) if stage_names else _implement_stages(workflow)
+    if not stages:
+        summary.exit_code = 2
+        summary.error = "Workflow has no enabled post-planner stages"
+        _finalize(config, summary, "", workflow_name, logger)
+        return summary
     _run_stages(config, summary, stages, "", observer=observer)
     _finalize(config, summary, "", workflow_name, logger)
     return summary
@@ -115,6 +120,11 @@ def run_workflow(
     summary = WorkflowSummary(run_dir=run_dir, plan_path=plan_path)
     _log_workflow_started(logger, summary, user_prompt, workflow_name, config)
     stages = _named_stages(workflow, stage_names) if stage_names else _enabled_stages(workflow)
+    if not stages:
+        summary.exit_code = 2
+        summary.error = "Workflow has no enabled stages"
+        _finalize(config, summary, user_prompt, workflow_name, logger)
+        return summary
     _run_stages(
         config,
         summary,
@@ -137,10 +147,16 @@ def _run_stages(
     observer: WorkflowObserver | None = None,
 ) -> None:
     logger = logging.getLogger("cli_router")
+    first_failure: tuple[int, str | None] | None = None
     for stage in stages:
         _run_stage(config, summary, stage, user_prompt, observer=observer, logger=logger)
-        if summary.exit_code and stop_on_failure:
-            return
+        if summary.exit_code:
+            if first_failure is None:
+                first_failure = (summary.exit_code, summary.error)
+            if stop_on_failure:
+                return
+    if first_failure is not None:
+        summary.exit_code, summary.error = first_failure
 
 
 def _run_stage(
@@ -187,15 +203,18 @@ def _run_stage(
         }
         if observer is not None:
             observer.stage_started(stage_id, tool_name, attempt)
+
+            def on_stdout_line(line: str, current_observer: WorkflowObserver = observer) -> None:
+                current_observer.stage_output(stage_id, tool_name, line)
+
+            def on_stderr_line(line: str, current_observer: WorkflowObserver = observer) -> None:
+                current_observer.stage_error(stage_id, tool_name, line)
+
             result = stream_tool(
                 tool,
                 variables,
-                on_stdout_line=lambda line, stage_id=stage_id, tool_name=tool_name: observer.stage_output(
-                    stage_id, tool_name, line
-                ),
-                on_stderr_line=lambda line, stage_id=stage_id, tool_name=tool_name: observer.stage_error(
-                    stage_id, tool_name, line
-                ),
+                on_stdout_line=on_stdout_line,
+                on_stderr_line=on_stderr_line,
             )
         else:
             result = run_tool(tool, variables)

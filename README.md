@@ -273,8 +273,11 @@ Set `defaults.log_dir` to store these files somewhere else, and `defaults.log_le
 ## Development
 
 ```bash
-python -m pip install -e .
+python -m pip install -e ".[dev]"
 python -m pytest
+ruff check cli_router scripts tests
+mypy cli_router scripts
+coverage run -m pytest tests -q && coverage report
 ```
 
 Build and check a release locally:
