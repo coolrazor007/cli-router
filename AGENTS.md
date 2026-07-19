@@ -12,6 +12,23 @@ CLI-Router is a Python command-line orchestrator for external AI coding CLIs. It
 
 Keep that boundary intact. New behavior should make orchestration more reliable or configurable, not turn this package into an agent.
 
+## Agent Orientation and Continuity
+
+This repository keeps agent-neutral continuity files in the repository root. Every coding agent should use them, regardless of vendor or runtime:
+
+1. Read `AGENTS.md` for normative repository rules.
+2. Read `STATE.md` for the last verified project, release, CI, and operational state. Confirm time-sensitive claims against the repository or service before acting.
+3. Read `MEMORY.md` for durable lessons and known operational traps. Treat it as accumulated guidance, not a substitute for direct verification.
+4. Follow task-specific documentation under `docs/`, especially `docs/releasing.md` for releases.
+
+Keep the files distinct:
+
+- Update `AGENTS.md` when repository-wide working rules or invariants change.
+- Update `STATE.md` after releases or when the current branch, version, CI, publishing, or known-blocker state materially changes.
+- Update `MEMORY.md` when a reusable lesson is learned about this repository or its development environment.
+- Never record tokens, passwords, private keys, one-time device codes, credential contents, or other secrets in any repository file. Paths to credential stores and safe verification commands are acceptable.
+- If continuity documentation conflicts with executable evidence, prefer the evidence and correct the stale documentation in the same change when practical.
+
 ## Source Layout
 
 - `cli_router/cli.py`: argparse CLI entry point and command dispatch.
@@ -285,3 +302,15 @@ Generated files that should normally remain untracked:
 - `.pytest_cache/`
 
 Before finalizing substantive changes, run `git status --short` and report any verification commands run.
+
+## Protected Branch and Release Workflow
+
+`main` is protected. Direct pushes are expected to fail with `GH006`; release metadata and all other changes must go through a pull request and the required checks. Do not bypass protection merely to complete a release.
+
+Use `docs/releasing.md` as the canonical release runbook. Important invariants:
+
+- Create the release commit on a branch, merge it through a green pull request, synchronize local `main`, and only then create the annotated release tag. The tag must point to the actual merged `main` commit, not a pre-merge or squash-source commit.
+- Pushing a tag does not publish the package. `.github/workflows/publish.yml` runs when a GitHub Release is published.
+- PyPI publishing uses GitHub Actions trusted publishing. Do not collect or add a local PyPI password/token for the normal release path.
+- Git transport and GitHub API authentication are separate. This repository's `origin` uses SSH, while `gh` stores its API credential persistently in the user's GitHub CLI configuration. A successful SSH test does not prove that `gh` is authenticated.
+- Before GitHub API work, run `gh auth status`. If the stored credential is invalid, reauthenticate once with `gh auth login`, verify the result, and reuse the persistent credential; do not start repeated login flows without checking status.

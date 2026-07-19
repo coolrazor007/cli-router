@@ -287,3 +287,7 @@ python -m pip install --upgrade build twine
 python -m build
 python -m twine check dist/*
 ```
+
+The protected-branch, tagging, GitHub Release, trusted PyPI publishing, authentication, and public-package verification procedure is documented in the [release runbook](https://github.com/coolrazor007/cli-router/blob/main/docs/releasing.md).
+
+For cross-agent continuity, repository rules live in [AGENTS.md](https://github.com/coolrazor007/cli-router/blob/main/AGENTS.md), the last verified operational state lives in [STATE.md](https://github.com/coolrazor007/cli-router/blob/main/STATE.md), and durable environment lessons live in [MEMORY.md](https://github.com/coolrazor007/cli-router/blob/main/MEMORY.md). These files are intentionally tool- and vendor-neutral.
