@@ -292,7 +292,7 @@ def test_requires_cli_router_accepts_running_version(tmp_path, monkeypatch):
     Path("cli-router.yaml").write_text(
         """
 version: 1
-requires_cli_router: ">=0.3.1,<0.4.0"
+requires_cli_router: ">=0.3.2,<0.4.0"
 tools:
   reviewer:
     command: ["reviewer"]
@@ -307,7 +307,7 @@ workflows:
 
     config = load_config()
 
-    assert config.data["requires_cli_router"] == ">=0.3.1,<0.4.0"
+    assert config.data["requires_cli_router"] == ">=0.3.2,<0.4.0"
 
 
 def test_config_version_two_requires_and_accepts_compatible_router_range(tmp_path, monkeypatch):
@@ -315,7 +315,7 @@ def test_config_version_two_requires_and_accepts_compatible_router_range(tmp_pat
     Path("cli-router.yaml").write_text(
         """
 version: 2
-requires_cli_router: ">=0.3.1,<0.4.0"
+requires_cli_router: ">=0.3.2,<0.4.0"
 tools:
   reviewer:
     command: ["reviewer"]
@@ -348,7 +348,7 @@ def test_requires_cli_router_rejects_incompatible_running_version(tmp_path, monk
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match=r"requires cli-router >=99.*running 0\.3\.1"):
+    with pytest.raises(ConfigError, match=r"requires cli-router >=99.*running 0\.3\.2"):
         load_config()
 
 

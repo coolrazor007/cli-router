@@ -120,7 +120,7 @@ Workflow stages use:
 - `id`: unique stage id within the workflow. The list order is the default execution order.
 - `tool`: primary tool name.
 - `fallback_tools`: optional ordered list of tool names or `{tool, on}` policy mappings. Fallback is fail-closed: only `auth_required`, `usage_limit`, `timeout`, and `transport_failure` may be named, and legacy string entries use that same safe operational set.
-- `max_fallback_attempts`: optional nonnegative cap on fallback attempts. Fallback must never run after semantic/generic command failures, `unsupported_model`, `extraction_failed`, or configuration errors.
+- `max_fallback_attempts`: optional nonnegative cap on fallback subprocesses actually started. Nonmatching policies are skipped without consuming the cap; a failed fallback's failure kind becomes the trigger for later policies. Fallback must never run after semantic/generic command failures, `unsupported_model`, `extraction_failed`, or configuration errors.
 - `enabled`: optional boolean; `false` skips the stage in default `run` and `implement`, while explicit `--stages` can still select it.
 - `input_template`: rendered prompt sent as `{prompt}` to the tool command.
 - `output_file`: planner output path, usually `PLAN.md`.
@@ -153,7 +153,7 @@ Tool config supports:
 - `stdin`: `inherit` (default) or `closed`.
 - `redact_environment_values`: environment names whose nonempty values are replaced in captured/streamed output and recorded commands before artifact persistence. Without this explicit setting, preserve raw stdout/stderr.
 
-Top-level `requires_cli_router` accepts a PEP 440 specifier such as `">=0.3.1,<0.4.0"`. It is mandatory for config version 2. All config-loading commands must fail before execution when the running version is incompatible.
+Top-level `requires_cli_router` accepts a PEP 440 specifier such as `">=0.3.2,<0.4.0"`. It is mandatory for config version 2. All config-loading commands must fail before execution when the running version is incompatible.
 
 Stable machine-readable output uses a single JSON object with `schema_version: 1`. `--json` is supported for `--version`, `check`, `plan`, `run`, `implement`, and `tools test`; preserve existing field names and semantics when extending the receipt schema.
 
@@ -208,7 +208,7 @@ Fallback attempts include the tool name:
 - `planner.codex-planner.stderr`
 - `planner.codex-planner.extracted.md`
 
-Every run writes `run.yaml` containing stage summaries, commands, return codes, extracted output, `failure_kind`, workflow start/finish timestamps, total duration, and per-stage duration metrics. Fallback attempt records also contain `primary_tool`, `primary_failure_kind`, `fallback_tool`, `fallback_reason`, and `fallback_attempt`.
+Every run writes `run.yaml` containing stage summaries, commands, return codes, extracted output, `failure_kind`, workflow start/finish timestamps, total duration, and per-stage duration metrics. Fallback attempt records also contain original-primary provenance (`primary_tool`, `primary_failure_kind`), immediate-trigger provenance (`trigger_tool`, `trigger_failure_kind`), `fallback_tool`, `fallback_reason`, and `fallback_attempt`.
 
 Persistent diagnostics write under `~/.cli-router/logs/` by default:
 

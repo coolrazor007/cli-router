@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .config import RouterConfig, config_checksum, config_source_identity, source_checksum
+from .config import RouterConfig
+from .config import config_identity as router_config_identity
 from .tools import ToolTestSummary
 from .workflows import StageSummary, WorkflowSummary
 
@@ -66,6 +67,7 @@ def tool_test_receipt(
         "tool": name,
         "provider": tool.get("provider"),
         "model": tool.get("model"),
+        "effort": tool.get("effort"),
         "attempt": 1,
         "exit_code": summary.result.returncode,
         "failure_kind": summary.failure_kind,
@@ -91,14 +93,12 @@ def tool_test_receipt(
 
 def error_receipt(command: str, error: str, config_path: str | Path | None = None) -> dict[str, Any]:
     source: str | None = None
-    checksum: str | None = None
     if config_path is not None:
         path = Path(config_path).resolve()
         source = str(path)
-        checksum = source_checksum(path)
     return _base_receipt(
         command,
-        config_identity={"source": source, "checksum": checksum},
+        config_identity={"source": source, "checksum": None, "effective_checksum": None},
         exit_code=2,
         error=error,
     )
@@ -121,12 +121,9 @@ def _base_receipt(
     error: str | None = None,
 ) -> dict[str, Any]:
     if config is not None:
-        config_identity = {
-            "source": config_source_identity(config),
-            "checksum": config_checksum(config),
-        }
+        config_identity = router_config_identity(config)
     if config_identity is None:
-        config_identity = {"source": None, "checksum": None}
+        config_identity = {"source": None, "checksum": None, "effective_checksum": None}
     return {
         "schema_version": SCHEMA_VERSION,
         "cli_router_version": __version__,
@@ -165,6 +162,7 @@ def _workflow_stage_receipt(
         "tool": stage.tool,
         "provider": tool.get("provider"),
         "model": tool.get("model"),
+        "effort": tool.get("effort"),
         "attempt": stage.attempt,
         "exit_code": stage.result.returncode,
         "failure_kind": stage.failure_kind,
@@ -178,6 +176,8 @@ def _workflow_stage_receipt(
             {
                 "primary_tool": stage.primary_tool,
                 "primary_failure_kind": stage.primary_failure_kind,
+                "trigger_tool": stage.trigger_tool,
+                "trigger_failure_kind": stage.trigger_failure_kind,
                 "fallback_tool": stage.tool,
                 "fallback_attempt": stage.fallback_attempt,
             }

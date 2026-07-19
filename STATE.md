@@ -6,11 +6,11 @@ This file records the current known state for maintainers and coding agents. Ver
 
 ## Current Release
 
-- Current package version: `0.3.1` in `pyproject.toml` and `cli_router/__init__.py`.
+- Current published package version: `0.3.1`. Draft PR #8 prepares package and runtime identity `0.3.2`; it is not yet merged, tagged, released, or published.
 - Annotated tag `v0.3.1` points to release commit `a37b4960dd7467f19bdb767502c13dcdc522326f`, which was the verified `main` and `origin/main` tip when 0.3.1 was published.
 - GitHub Release: <https://github.com/coolrazor007/cli-router/releases/tag/v0.3.1>
 - PyPI package: `cli-router==0.3.1`, independently installed from the public PyPI index and verified to report metadata and runtime version `0.3.1`.
-- The `Unreleased` changelog section is empty after the 0.3.1 release.
+- The `Unreleased` changelog section is empty after the 0.3.1 release; draft PR #8 stages its accepted changes under a dated 0.3.2 release section.
 - Issue #1, the empty-stage false green, is closed as completed and represented in the 0.3.1 changelog.
 
 ## Repository and CI

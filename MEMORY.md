@@ -49,3 +49,12 @@ This file preserves durable, high-signal lessons for maintainers and coding agen
 
 - A router released before `requires_cli_router` existed can ignore that unknown top-level key, so the key alone cannot protect a safety-sensitive config from old binaries.
 - Config version 2 is the bootstrap boundary: old routers that only accept version 1 fail immediately, while new routers require and evaluate `requires_cli_router`. Keep legacy version 1 support, including treating configs with no explicit version as v1.
+
+## Fallback Policies Filter; Attempt Caps Count Processes
+
+- A nonmatching conditional fallback policy is skipped, not treated as a failed attempt and not charged against `max_fallback_attempts`.
+- After a fallback subprocess fails, its classified failure becomes the immediate trigger for later policies. Keep original-primary provenance separate from this immediate-trigger provenance so multi-hop chains remain auditable.
+
+## Config Receipt Identity Is a Load-Time Snapshot
+
+- Receipt identity must hash the exact source bytes read and the canonical effective merged config while loading. Never reread the source path when emitting a receipt: another process can replace the file between execution and receipt emission.

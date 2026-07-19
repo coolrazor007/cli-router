@@ -103,14 +103,14 @@ Project configs can require a compatible CLI-Router release with a PEP 440 versi
 
 ```yaml
 version: 2
-requires_cli_router: ">=0.3.1,<0.4.0"
+requires_cli_router: ">=0.3.2,<0.4.0"
 ```
 
 Minimal example:
 
 ```yaml
 version: 2
-requires_cli_router: ">=0.3.1,<0.4.0"
+requires_cli_router: ">=0.3.2,<0.4.0"
 
 defaults:
   plan_file: PLAN.md
@@ -296,7 +296,9 @@ When a stage command fails, CLI-Router records stdout/stderr and classifies comm
 
 Fallback is fail-closed and only available for the operational failure kinds `auth_required`, `usage_limit`, `timeout`, and `transport_failure`. A structured fallback selects the allowed kinds with `on`; `max_fallback_attempts` caps how many alternates may run. Legacy string entries remain supported as shorthand for the full safe operational set. CLI-Router never falls back after generic command/semantic failures, unsupported-model configuration, malformed structured output (`extraction_failed`), or runtime configuration errors. Successful extracted verdicts such as `FAIL`, `PASS_WITH_WARNINGS`, or `INCONCLUSIVE` are final stage output and do not trigger fallback.
 
-Each fallback attempt records `primary_tool`, `primary_failure_kind`, `fallback_tool`, `fallback_reason: allowed_failure_kind`, and the one-based `fallback_attempt` in `run.yaml`.
+Fallback policies are scanned in configured order. Policies that do not allow the current failure are skipped without consuming `max_fallback_attempts`; the cap counts only fallback subprocesses actually started. After a fallback fails, its failure kind becomes the trigger evaluated by later policies.
+
+Each fallback attempt records the original `primary_tool` and `primary_failure_kind`, the immediate `trigger_tool` and `trigger_failure_kind`, `fallback_tool`, `fallback_reason: allowed_failure_kind`, and the one-based `fallback_attempt` in `run.yaml`.
 
 Tool execution inherits the router process environment and stdin by default for backward compatibility. `environment_mode: allowlist` starts from only `environment_allowlist`; `environment` then adds or overrides values, and `environment_unset` removes named values. `stdin: closed` connects the child to the null device. `redact_environment_values` names environment variables whose nonempty values are replaced in captured stdout, stderr, streamed output, and the recorded command before artifacts are written. This is an explicit privacy mode: without it, raw output remains unchanged.
 
@@ -305,10 +307,10 @@ Tool execution inherits the router process environment and stdin by default for 
 `--json` is supported by `--version`, `check`, `plan`, `run`, `implement`, and `tools test` (place it after the subcommand for command-specific use). Each invocation prints exactly one JSON object with `schema_version: 1`. The stable envelope includes:
 
 - CLI-Router version and command.
-- Config source and SHA-256 checksum (source-file bytes, or the canonical built-in config).
+- Config source, the SHA-256 checksum of the exact source bytes loaded, and the SHA-256 checksum of the canonical effective merged config. These values are captured at load time and do not change if the source file is rewritten during execution.
 - Workflow, run ID/directory, duration, exit code, overall outcome, and error.
 - Whether fallback was used and why.
-- Per-attempt stage, tool, provider/model, attempt number, exit code, failure kind, duration, fallback provenance, and artifact paths.
+- Per-attempt stage, tool, provider/model/reasoning effort, attempt number, exit code, failure kind, duration, fallback provenance, and artifact paths.
 
 Examples:
 

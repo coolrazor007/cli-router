@@ -2,8 +2,12 @@
 
 ## Unreleased
 
+## 0.3.2 - 2026-07-19
+
 - Added fail-closed conditional fallback policies with per-tool `on` failure allowlists, `max_fallback_attempts`, transport-failure classification, and fallback provenance in run manifests. Legacy string fallbacks now use only the safe operational failure set and never retry semantic, extraction, unsupported-model, or configuration failures.
+- Fixed conditional fallback selection to scan past nonmatching policies, count only started fallback subprocesses against `max_fallback_attempts`, carry failed fallback classifications into later policy checks, and record both original-primary and immediate-trigger provenance.
 - Added schema-versioned JSON receipts for `--version`, `check`, `plan`, `run`, `implement`, and `tools test`, including config checksums, run/stage/model details, failure and fallback data, durations, outcomes, and artifact paths.
+- Captured config source and effective merged-config checksums immutably at load time so receipts remain bound to the configuration actually executed, and added provider reasoning effort to workflow and tool-test stage receipts.
 - Added tool-level cwd, environment allowlisting/overrides/unsets, closed stdin, and configured environment-value redaction for commands and captured/streamed output.
 - Added config schema v2 with mandatory `requires_cli_router` PEP 440 compatibility declarations, while retaining v1 support. Older routers reject the v2 schema instead of silently ignoring its safety requirement.
 

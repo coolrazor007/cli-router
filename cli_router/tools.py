@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .artifacts import create_run_dir, write_run_manifest, write_stage_artifacts
-from .config import RouterConfig, config_checksum, config_source_identity
+from .config import RouterConfig, config_identity
 from .failures import classify_failure
 from .runner import ToolRunResult, run_tool
 
@@ -42,10 +42,7 @@ def test_tool(config: RouterConfig, name: str, prompt: str = "CLI-Router tool te
         {
             "command": "tools test",
             "run_id": run_dir.name,
-            "config": {
-                "source": config_source_identity(config),
-                "checksum": config_checksum(config),
-            },
+            "config": config_identity(config),
             "tool": name,
             "prompt": prompt,
             "exit_code": result.returncode,

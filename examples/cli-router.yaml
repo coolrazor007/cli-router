@@ -1,5 +1,5 @@
 version: 2
-requires_cli_router: ">=0.3.1,<0.4.0"
+requires_cli_router: ">=0.3.2,<0.4.0"
 
 defaults:
   plan_file: PLAN.md

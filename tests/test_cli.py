@@ -1,11 +1,14 @@
 import json
 import sys
+from hashlib import sha256
 from pathlib import Path
 
 import yaml
 
 import cli_router.cli as cli
 from cli_router.cli import main
+from cli_router.config import load_config
+from cli_router.receipts import check_receipt
 
 
 def test_cli_help_displays_usage(capsys):
@@ -229,9 +232,9 @@ def test_cli_version_json_is_machine_readable_without_loading_config(tmp_path, m
     assert exit_code == 0
     assert payload == {
         "schema_version": 1,
-        "cli_router_version": "0.3.1",
+        "cli_router_version": "0.3.2",
         "command": "version",
-        "config": {"source": None, "checksum": None},
+        "config": {"source": None, "checksum": None, "effective_checksum": None},
         "workflow": None,
         "run_id": None,
         "run_dir": None,
@@ -253,7 +256,7 @@ def test_cli_check_json_includes_config_identity(tmp_path, monkeypatch, capsys):
         yaml.safe_dump(
             {
                 "version": 1,
-                "requires_cli_router": ">=0.3.1,<0.4.0",
+                "requires_cli_router": ">=0.3.2,<0.4.0",
                 "tools": {"reviewer": {"command": ["reviewer"]}},
                 "workflows": {"default": {"stages": [{"id": "review", "tool": "reviewer"}]}},
             }
@@ -269,7 +272,36 @@ def test_cli_check_json_includes_config_identity(tmp_path, monkeypatch, capsys):
     assert payload["config"]["source"] == str(config_path)
     assert payload["config"]["checksum"].startswith("sha256:")
     assert len(payload["config"]["checksum"]) == 71
+    assert payload["config"]["effective_checksum"].startswith("sha256:")
+    assert len(payload["config"]["effective_checksum"]) == 71
     assert payload["overall_outcome"] == "success"
+
+
+def test_config_receipt_identity_is_immutable_and_hashes_merged_effective_config(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "cli-router.yaml"
+    source_a = b"version: 1\ndefaults:\n  plan_file: A.md\n"
+    source_b = b"version: 1\ndefaults:\n  plan_file: B.md\n"
+    config_path.write_bytes(source_a)
+
+    config = load_config()
+    effective_bytes = yaml.safe_dump(config.data, sort_keys=True, allow_unicode=True).encode("utf-8")
+    source_only = yaml.safe_dump(yaml.safe_load(source_a), sort_keys=True, allow_unicode=True).encode(
+        "utf-8"
+    )
+    config_path.write_bytes(source_b)
+
+    payload = check_receipt(config)
+
+    assert "generic-planner" in config.tools
+    assert payload["config"] == {
+        "source": str(config_path),
+        "checksum": f"sha256:{sha256(source_a).hexdigest()}",
+        "effective_checksum": f"sha256:{sha256(effective_bytes).hexdigest()}",
+    }
+    assert payload["config"]["effective_checksum"] != f"sha256:{sha256(source_only).hexdigest()}"
 
 
 def test_cli_run_json_reports_attempts_models_fallback_and_artifacts(tmp_path, monkeypatch, capsys):
@@ -281,6 +313,7 @@ def test_cli_run_json_reports_attempts_models_fallback_and_artifacts(tmp_path, m
             "grok-reviewer": {
                 "provider": "grok",
                 "model": "grok-review",
+                "effort": "high",
                 "command": [
                     sys.executable,
                     "-c",
@@ -291,6 +324,7 @@ def test_cli_run_json_reports_attempts_models_fallback_and_artifacts(tmp_path, m
             "fable-reviewer": {
                 "provider": "claude",
                 "model": "claude-fable-5",
+                "effort": "medium",
                 "command": [sys.executable, "-c", "print('PASS')"],
                 "output": {"format": "text"},
             },
@@ -326,6 +360,7 @@ def test_cli_run_json_reports_attempts_models_fallback_and_artifacts(tmp_path, m
         "tool": "grok-reviewer",
         "provider": "grok",
         "model": "grok-review",
+        "effort": "high",
         "attempt": 1,
         "exit_code": 1,
         "failure_kind": "auth_required",
@@ -334,6 +369,7 @@ def test_cli_run_json_reports_attempts_models_fallback_and_artifacts(tmp_path, m
     } == payload["stages"][0]
     assert payload["stages"][1]["tool"] == "fable-reviewer"
     assert payload["stages"][1]["model"] == "claude-fable-5"
+    assert payload["stages"][1]["effort"] == "medium"
     assert payload["stages"][1]["attempt"] == 2
     assert payload["stages"][1]["fallback_used"] is True
     assert payload["stages"][1]["primary_failure_kind"] == "auth_required"
@@ -351,6 +387,7 @@ def test_cli_tools_test_json_reports_receipt(tmp_path, monkeypatch, capsys):
                     "reviewer": {
                         "provider": "grok",
                         "model": "grok-review",
+                        "effort": "low",
                         "command": [sys.executable, "-c", "print('ok')"],
                     }
                 },
@@ -369,6 +406,7 @@ def test_cli_tools_test_json_reports_receipt(tmp_path, monkeypatch, capsys):
     assert payload["overall_outcome"] == "success"
     assert payload["stages"][0]["tool"] == "reviewer"
     assert payload["stages"][0]["model"] == "grok-review"
+    assert payload["stages"][0]["effort"] == "low"
     assert payload["stages"][0]["attempt"] == 1
     assert payload["stages"][0]["failure_kind"] is None
     assert Path(payload["stages"][0]["artifacts"]["stdout"]).exists()

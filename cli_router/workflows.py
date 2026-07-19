@@ -34,6 +34,8 @@ class StageSummary:
     duration_seconds: float = 0.0
     primary_tool: str | None = None
     primary_failure_kind: str | None = None
+    trigger_tool: str | None = None
+    trigger_failure_kind: str | None = None
     fallback_reason: str | None = None
     fallback_attempt: int | None = None
 
@@ -184,14 +186,31 @@ def _run_stage(
     primary_tool = str(stage["tool"])
     fallback_policies = [_fallback_policy(value) for value in stage.get("fallback_tools", [])]
     max_fallback_attempts = int(stage.get("max_fallback_attempts", len(fallback_policies)))
-    attempts = [(primary_tool, None), *fallback_policies[:max_fallback_attempts]]
-    previous_failure_kind: str | None = None
+    candidates = [(primary_tool, None), *fallback_policies]
+    fallback_attempts_started = 0
+    subprocess_attempt = 0
+    current_failure_kind: str | None = None
+    current_failure_tool: str | None = None
     primary_failure_kind: str | None = None
 
-    for attempt_index, (tool_name, allowed_failure_kinds) in enumerate(attempts):
-        if allowed_failure_kinds is not None and previous_failure_kind not in allowed_failure_kinds:
-            return
-        attempt = attempt_index + 1
+    for tool_name, allowed_failure_kinds in candidates:
+        is_fallback = allowed_failure_kinds is not None
+        trigger_tool: str | None = None
+        trigger_failure_kind: str | None = None
+        if is_fallback:
+            assert allowed_failure_kinds is not None
+            if current_failure_kind not in FALLBACK_SAFE_FAILURE_KINDS:
+                return
+            if current_failure_kind not in allowed_failure_kinds:
+                continue
+            if fallback_attempts_started >= max_fallback_attempts:
+                return
+            fallback_attempts_started += 1
+            trigger_tool = current_failure_tool
+            trigger_failure_kind = current_failure_kind
+
+        subprocess_attempt += 1
+        attempt = subprocess_attempt
         started_at = _now_iso()
         started = time.monotonic()
         tool = config.tools[tool_name]
@@ -202,7 +221,7 @@ def _run_stage(
                 stage=stage_id,
                 tool=tool_name,
                 attempt=attempt,
-                fallback=attempt_index > 0,
+                fallback=is_fallback,
             ),
         )
         variables = {
@@ -246,24 +265,26 @@ def _run_stage(
             summary.exit_code = result.returncode
             summary.error = stage_failure_message(stage_id, result, failure_kind)
 
-        artifact_prefix = stage_id if attempt_index == 0 else f"{stage_id}.{tool_name}"
+        artifact_prefix = stage_id if not is_fallback else f"{stage_id}.{tool_name}"
         write_stage_artifacts(summary.run_dir, artifact_prefix, result, extracted)
         finished_at = _now_iso()
         duration_seconds = _elapsed(started)
         stage_summary = StageSummary(
-            stage_id,
-            tool_name,
-            result,
-            extracted,
-            failure_kind,
-            attempt,
-            started_at,
-            finished_at,
-            duration_seconds,
-            primary_tool if attempt_index > 0 else None,
-            primary_failure_kind if attempt_index > 0 else None,
-            "allowed_failure_kind" if attempt_index > 0 else None,
-            attempt_index if attempt_index > 0 else None,
+            stage_id=stage_id,
+            tool=tool_name,
+            result=result,
+            extracted=extracted,
+            failure_kind=failure_kind,
+            attempt=attempt,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_seconds=duration_seconds,
+            primary_tool=primary_tool if is_fallback else None,
+            primary_failure_kind=primary_failure_kind if is_fallback else None,
+            trigger_tool=trigger_tool,
+            trigger_failure_kind=trigger_failure_kind,
+            fallback_reason="allowed_failure_kind" if is_fallback else None,
+            fallback_attempt=fallback_attempts_started if is_fallback else None,
         )
         summary.stages.append(stage_summary)
         logger.info(
@@ -291,8 +312,9 @@ def _run_stage(
                 if _stage_updates_plan(stage, output_file, summary.plan_path):
                     summary.plan_path = output_file
             return
-        previous_failure_kind = failure_kind
-        if attempt_index == 0:
+        current_failure_kind = failure_kind
+        current_failure_tool = tool_name
+        if not is_fallback:
             primary_failure_kind = failure_kind
 
 
@@ -489,6 +511,8 @@ def _stage_manifest_entry(stage: StageSummary) -> dict[str, Any]:
             {
                 "primary_tool": stage.primary_tool,
                 "primary_failure_kind": stage.primary_failure_kind,
+                "trigger_tool": stage.trigger_tool,
+                "trigger_failure_kind": stage.trigger_failure_kind,
                 "fallback_tool": stage.tool,
                 "fallback_reason": stage.fallback_reason,
                 "fallback_attempt": stage.fallback_attempt,
