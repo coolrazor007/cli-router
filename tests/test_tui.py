@@ -1061,6 +1061,9 @@ def test_first_run_selects_provider_and_persists_user_config(tmp_path, monkeypat
     saved = user_config_path()
     assert saved.exists()
     saved_text = saved.read_text(encoding="utf-8")
+    saved_config = yaml.safe_load(saved_text)
+    assert saved_config["version"] == 2
+    assert saved_config["requires_cli_router"] == ">=0.3.1,<0.4.0"
     assert "provider: codex" in saved_text
     assert "tool: codex" in saved_text
     output = output_path.read_text(encoding="utf-8")

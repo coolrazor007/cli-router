@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added fail-closed conditional fallback policies with per-tool `on` failure allowlists, `max_fallback_attempts`, transport-failure classification, and fallback provenance in run manifests. Legacy string fallbacks now use only the safe operational failure set and never retry semantic, extraction, unsupported-model, or configuration failures.
+- Added schema-versioned JSON receipts for `--version`, `check`, `plan`, `run`, `implement`, and `tools test`, including config checksums, run/stage/model details, failure and fallback data, durations, outcomes, and artifact paths.
+- Added tool-level cwd, environment allowlisting/overrides/unsets, closed stdin, and configured environment-value redaction for commands and captured/streamed output.
+- Added config schema v2 with mandatory `requires_cli_router` PEP 440 compatibility declarations, while retaining v1 support. Older routers reject the v2 schema instead of silently ignoring its safety requirement.
+
 ## 0.3.1 - 2026-07-19
 
 - Made workflow outcomes fail closed: `run` and `implement` now reject empty resolved stage lists, and `stop_on_failure: false` preserves the first failed stage as the overall result even when later stages succeed.

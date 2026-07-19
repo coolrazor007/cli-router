@@ -4,11 +4,21 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 from typing import Sequence
 
-from .config import ConfigError, config_to_yaml, load_config
+from . import __version__
+from .config import ConfigError, RouterConfig, config_candidates, config_to_yaml, load_config
 from .doctor import ProviderHealth, RepairResult, diagnose, repair
 from .modelcache import ModelCache
+from .receipts import (
+    check_receipt,
+    error_receipt,
+    print_json_receipt,
+    tool_test_receipt,
+    version_receipt,
+    workflow_receipt,
+)
 from .runs import RunDetail, RunInfo, list_runs, show_run
 from .streamfmt import condense_extracted
 from .tools import list_tools, test_tool
@@ -23,20 +33,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else 1
 
+    if args.version:
+        if args.json:
+            print_json_receipt(version_receipt())
+        else:
+            print(f"cli-router {__version__}")
+        return 0
+
     try:
         config = load_config(args.config)
         if args.command is None:
             return run_tui(config)
         if args.command == "plan":
-            return _print_summary(plan_workflow(config, args.prompt, args.workflow, _parse_stage_names(args.stages)))
+            summary = plan_workflow(config, args.prompt, args.workflow, _parse_stage_names(args.stages))
+            return _emit_workflow_summary(config, "plan", args.workflow, summary, args.json)
         if args.command == "run":
-            return _print_summary(run_workflow(config, args.prompt, args.workflow, _parse_stage_names(args.stages)))
+            summary = run_workflow(config, args.prompt, args.workflow, _parse_stage_names(args.stages))
+            return _emit_workflow_summary(config, "run", args.workflow, summary, args.json)
         if args.command == "implement":
-            return _print_summary(implement_workflow(config, args.workflow, _parse_stage_names(args.stages)))
+            summary = implement_workflow(config, args.workflow, _parse_stage_names(args.stages))
+            return _emit_workflow_summary(config, "implement", args.workflow, summary, args.json)
         if args.command == "tui":
             return run_tui(config, args.workflow, args.prompt)
         if args.command == "check":
-            print("Configuration OK")
+            if args.json:
+                print_json_receipt(check_receipt(config))
+            else:
+                print("Configuration OK")
             return 0
         if args.command == "doctor":
             return _run_doctor(repair_enabled=args.repair)
@@ -48,10 +71,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(name)
             return 0
         if args.command == "tools" and args.tools_command == "test":
-            summary = test_tool(config, args.name)
-            print(f"{args.name}: exit {summary.result.returncode}")
-            print(f"run_dir: {summary.run_dir}")
-            return summary.result.returncode
+            tool_summary = test_tool(config, args.name)
+            if args.json:
+                print_json_receipt(tool_test_receipt(config, args.name, tool_summary))
+            else:
+                print(f"{args.name}: exit {tool_summary.result.returncode}")
+                print(f"run_dir: {tool_summary.run_dir}")
+            return tool_summary.result.returncode
         if args.command == "runs" and args.runs_command in (None, "list"):
             _print_runs_list(list_runs(config))
             return 0
@@ -59,7 +85,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_run_detail(show_run(config, args.id))
             return 0
     except (ConfigError, KeyError) as exc:
-        print(f"cli-router: {exc}", file=sys.stderr)
+        if args.json:
+            print_json_receipt(error_receipt(_command_name(args), str(exc), _error_config_path(args.config)))
+        else:
+            print(f"cli-router: {exc}", file=sys.stderr)
         return 2
 
     parser.print_help()
@@ -69,6 +98,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cli-router", description="Route planning and coding stages across external CLIs.")
     parser.add_argument("--config", help="Path to a cli-router YAML config file.")
+    parser.add_argument("--version", action="store_true", help="Print the CLI-Router version and exit.")
+    parser.add_argument("--json", action="store_true", help="Emit stable machine-readable JSON where supported.")
 
     subparsers = parser.add_subparsers(dest="command")
 
@@ -76,21 +107,25 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("prompt")
     run_parser.add_argument("--workflow", default="default")
     run_parser.add_argument("--stages", help="Comma-separated stage IDs to run in the given order.")
+    _add_json_argument(run_parser)
 
     plan_parser = subparsers.add_parser("plan", help="Run only the planner stage.")
     plan_parser.add_argument("prompt")
     plan_parser.add_argument("--workflow", default="default")
     plan_parser.add_argument("--stages", help="Comma-separated stage IDs to run in the given order.")
+    _add_json_argument(plan_parser)
 
     implement_parser = subparsers.add_parser("implement", help="Run enabled post-planner stages using the plan file.")
     implement_parser.add_argument("--workflow", default="default")
     implement_parser.add_argument("--stages", help="Comma-separated stage IDs to run in the given order.")
+    _add_json_argument(implement_parser)
 
     tui_parser = subparsers.add_parser("tui", help="Open an interactive stage selector.")
     tui_parser.add_argument("prompt", nargs="?")
     tui_parser.add_argument("--workflow", default="default")
 
-    subparsers.add_parser("check", help="Validate the loaded configuration.")
+    check_parser = subparsers.add_parser("check", help="Validate the loaded configuration.")
+    _add_json_argument(check_parser)
 
     doctor_parser = subparsers.add_parser(
         "doctor", help="Diagnose provider CLIs for model-discovery drift and optionally repair it."
@@ -110,6 +145,7 @@ def _build_parser() -> argparse.ArgumentParser:
     tools_subparsers.add_parser("list", help="List configured tools.")
     test_parser = tools_subparsers.add_parser("test", help="Run a configured tool with a test prompt.")
     test_parser.add_argument("name")
+    _add_json_argument(test_parser)
 
     runs_parser = subparsers.add_parser("runs", help="Inspect previous run artifacts.")
     runs_subparsers = runs_parser.add_subparsers(dest="runs_command")
@@ -118,6 +154,15 @@ def _build_parser() -> argparse.ArgumentParser:
     show_parser.add_argument("id")
 
     return parser
+
+
+def _add_json_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit stable machine-readable JSON.",
+    )
 
 
 def _run_doctor(*, repair_enabled: bool) -> int:
@@ -192,6 +237,31 @@ def _print_summary(summary: WorkflowSummary) -> int:
         print(f"error: {summary.error}", file=sys.stderr)
     print(f"exit_code: {summary.exit_code}")
     return summary.exit_code
+
+
+def _emit_workflow_summary(
+    config: RouterConfig,
+    command: str,
+    workflow: str,
+    summary: WorkflowSummary,
+    as_json: bool,
+) -> int:
+    if as_json:
+        print_json_receipt(workflow_receipt(config, command, workflow, summary))
+        return summary.exit_code
+    return _print_summary(summary)
+
+
+def _command_name(args: argparse.Namespace) -> str:
+    if args.command == "tools" and getattr(args, "tools_command", None):
+        return f"tools {args.tools_command}"
+    return args.command or "tui"
+
+
+def _error_config_path(explicit_path: str | None) -> Path | None:
+    if explicit_path:
+        return Path(explicit_path)
+    return next((path for path in config_candidates() if path.exists()), None)
 
 
 def _print_runs_list(runs: list[RunInfo]) -> None:

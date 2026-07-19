@@ -484,6 +484,195 @@ def test_run_workflow_uses_stage_fallback_tool_after_usage_limit(tmp_path, monke
     assert (summary.run_dir / "planner.codex-planner.extracted.md").read_text(encoding="utf-8") == "fallback plan"
 
 
+def test_run_workflow_applies_conditional_fallback_and_records_provenance(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    data = {
+        "version": 1,
+        "defaults": {"plan_file": "PLAN.md", "run_dir": ".cli-router/runs"},
+        "tools": {
+            "grok-reviewer": {
+                "command": [
+                    sys.executable,
+                    "-c",
+                    "import sys; print('Not logged in', file=sys.stderr); sys.exit(1)",
+                ],
+                "output": {"format": "text"},
+            },
+            "fable-reviewer": {
+                "command": [sys.executable, "-c", "print('PASS')"],
+                "output": {"format": "text"},
+            },
+        },
+        "workflows": {
+            "default": {
+                "stages": [
+                    {
+                        "id": "review",
+                        "tool": "grok-reviewer",
+                        "fallback_tools": [
+                            {
+                                "tool": "fable-reviewer",
+                                "on": ["auth_required", "usage_limit", "timeout", "transport_failure"],
+                            }
+                        ],
+                        "max_fallback_attempts": 1,
+                    }
+                ]
+            }
+        },
+    }
+    Path("cli-router.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    summary = run_workflow(load_config(), "review target")
+
+    assert summary.exit_code == 0
+    assert [(stage.tool, stage.attempt) for stage in summary.stages] == [
+        ("grok-reviewer", 1),
+        ("fable-reviewer", 2),
+    ]
+    fallback = summary.stages[1]
+    assert fallback.primary_tool == "grok-reviewer"
+    assert fallback.primary_failure_kind == "auth_required"
+    assert fallback.fallback_reason == "allowed_failure_kind"
+    assert fallback.fallback_attempt == 1
+    manifest = yaml.safe_load((summary.run_dir / "run.yaml").read_text(encoding="utf-8"))
+    assert manifest["stages"][1] | {
+        "primary_tool": "grok-reviewer",
+        "primary_failure_kind": "auth_required",
+        "fallback_tool": "fable-reviewer",
+        "fallback_reason": "allowed_failure_kind",
+        "fallback_attempt": 1,
+    } == manifest["stages"][1]
+
+
+def test_run_workflow_does_not_fallback_after_malformed_structured_output(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    data = {
+        "version": 1,
+        "defaults": {"plan_file": "PLAN.md", "run_dir": ".cli-router/runs"},
+        "tools": {
+            "primary": {
+                "command": [sys.executable, "-c", "print('not json')"],
+                "output": {"format": "json", "extract": "verdict"},
+            },
+            "backup": {
+                "command": [sys.executable, "-c", "print('PASS')"],
+                "output": {"format": "text"},
+            },
+        },
+        "workflows": {
+            "default": {
+                "stages": [
+                    {
+                        "id": "review",
+                        "tool": "primary",
+                        "fallback_tools": ["backup"],
+                    }
+                ]
+            }
+        },
+    }
+    Path("cli-router.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    summary = run_workflow(load_config(), "review target")
+
+    assert summary.exit_code == 3
+    assert len(summary.stages) == 1
+    assert summary.stages[0].failure_kind == "extraction_failed"
+    assert not (summary.run_dir / "review.backup.stdout").exists()
+
+
+def test_run_workflow_does_not_fallback_after_semantic_failure(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    data = {
+        "version": 1,
+        "defaults": {"plan_file": "PLAN.md", "run_dir": ".cli-router/runs"},
+        "tools": {
+            "primary": {
+                "command": [sys.executable, "-c", "import sys; print('FAIL'); sys.exit(1)"],
+                "output": {"format": "text"},
+            },
+            "backup": {
+                "command": [sys.executable, "-c", "print('PASS')"],
+                "output": {"format": "text"},
+            },
+        },
+        "workflows": {
+            "default": {
+                "stages": [
+                    {
+                        "id": "review",
+                        "tool": "primary",
+                        "fallback_tools": ["backup"],
+                    }
+                ]
+            }
+        },
+    }
+    Path("cli-router.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    summary = run_workflow(load_config(), "review target")
+
+    assert summary.exit_code == 1
+    assert len(summary.stages) == 1
+    assert summary.stages[0].failure_kind == "command_failed"
+
+
+def test_run_workflow_limits_fallback_attempts(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    fail = "import sys; print('usage limit', file=sys.stderr); sys.exit(1)"
+    data = {
+        "version": 1,
+        "defaults": {"plan_file": "PLAN.md", "run_dir": ".cli-router/runs"},
+        "tools": {
+            name: {"command": [sys.executable, "-c", fail], "output": {"format": "text"}}
+            for name in ("primary", "backup-one", "backup-two")
+        },
+        "workflows": {
+            "default": {
+                "stages": [
+                    {
+                        "id": "review",
+                        "tool": "primary",
+                        "fallback_tools": ["backup-one", "backup-two"],
+                        "max_fallback_attempts": 1,
+                    }
+                ]
+            }
+        },
+    }
+    Path("cli-router.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    summary = run_workflow(load_config(), "review target")
+
+    assert summary.exit_code == 1
+    assert [stage.tool for stage in summary.stages] == ["primary", "backup-one"]
+
+
+def test_workflow_provides_target_root_to_tool_policy(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    data = {
+        "version": 1,
+        "defaults": {"run_dir": ".cli-router/runs"},
+        "tools": {
+            "reviewer": {
+                "command": [sys.executable, "-c", "import os; print(os.getcwd())"],
+                "cwd": "{target_root}/target",
+                "output": {"format": "text"},
+            }
+        },
+        "workflows": {"default": {"stages": [{"id": "review", "tool": "reviewer"}]}},
+    }
+    Path("cli-router.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    summary = run_workflow(load_config(), "review target")
+
+    assert summary.exit_code == 0
+    assert summary.stages[0].result.stdout.strip() == str(target)
+
+
 def test_run_workflow_observer_receives_stage_events_in_order(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     write_config(tmp_path, "import json; print(json.dumps({'result': 'the plan'}), flush=True)")

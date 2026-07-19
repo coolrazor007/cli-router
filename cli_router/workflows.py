@@ -12,7 +12,7 @@ from typing import Any, Protocol, Sequence
 from .artifacts import create_run_dir, write_run_manifest, write_stage_artifacts
 from .config import RouterConfig
 from .extractors import ExtractionError, extract_output
-from .failures import classify_failure, stage_failure_message
+from .failures import FALLBACK_SAFE_FAILURE_KINDS, classify_failure, stage_failure_message
 from .logs import append_run_metrics, configure_logging, key_values
 from .runner import ToolRunResult, render_placeholders, run_tool, stream_tool
 
@@ -32,6 +32,10 @@ class StageSummary:
     started_at: str = ""
     finished_at: str = ""
     duration_seconds: float = 0.0
+    primary_tool: str | None = None
+    primary_failure_kind: str | None = None
+    fallback_reason: str | None = None
+    fallback_attempt: int | None = None
 
 
 @dataclass
@@ -177,9 +181,16 @@ def _run_stage(
         previous_output=previous_output,
         all_stage_outputs=all_stage_outputs,
     )
-    tool_names = [str(stage["tool"]), *[str(tool_name) for tool_name in stage.get("fallback_tools", [])]]
+    primary_tool = str(stage["tool"])
+    fallback_policies = [_fallback_policy(value) for value in stage.get("fallback_tools", [])]
+    max_fallback_attempts = int(stage.get("max_fallback_attempts", len(fallback_policies)))
+    attempts = [(primary_tool, None), *fallback_policies[:max_fallback_attempts]]
+    previous_failure_kind: str | None = None
+    primary_failure_kind: str | None = None
 
-    for attempt_index, tool_name in enumerate(tool_names):
+    for attempt_index, (tool_name, allowed_failure_kinds) in enumerate(attempts):
+        if allowed_failure_kinds is not None and previous_failure_kind not in allowed_failure_kinds:
+            return
         attempt = attempt_index + 1
         started_at = _now_iso()
         started = time.monotonic()
@@ -200,6 +211,7 @@ def _run_stage(
             "plan_path": str(summary.plan_path),
             "previous_output": previous_output,
             "all_stage_outputs": all_stage_outputs,
+            "target_root": str(Path.cwd().resolve()),
         }
         if observer is not None:
             observer.stage_started(stage_id, tool_name, attempt)
@@ -248,6 +260,10 @@ def _run_stage(
             started_at,
             finished_at,
             duration_seconds,
+            primary_tool if attempt_index > 0 else None,
+            primary_failure_kind if attempt_index > 0 else None,
+            "allowed_failure_kind" if attempt_index > 0 else None,
+            attempt_index if attempt_index > 0 else None,
         )
         summary.stages.append(stage_summary)
         logger.info(
@@ -275,6 +291,15 @@ def _run_stage(
                 if _stage_updates_plan(stage, output_file, summary.plan_path):
                     summary.plan_path = output_file
             return
+        previous_failure_kind = failure_kind
+        if attempt_index == 0:
+            primary_failure_kind = failure_kind
+
+
+def _fallback_policy(value: Any) -> tuple[str, frozenset[str]]:
+    if isinstance(value, str):
+        return value, FALLBACK_SAFE_FAILURE_KINDS
+    return str(value["tool"]), frozenset(str(item) for item in value["on"])
 
 
 def _workflow(config: RouterConfig, name: str) -> dict[str, Any]:
@@ -443,7 +468,7 @@ def _stage_manifest_entry(stage: StageSummary) -> dict[str, Any]:
     artifacts = {"stdout": f"{prefix}.stdout", "stderr": f"{prefix}.stderr"}
     if stage.extracted is not None:
         artifacts["extracted"] = f"{prefix}.extracted.md"
-    return {
+    entry = {
         "stage_id": stage.stage_id,
         "tool": stage.tool,
         "attempt": stage.attempt,
@@ -459,6 +484,17 @@ def _stage_manifest_entry(stage: StageSummary) -> dict[str, Any]:
         "extracted_bytes": _byte_count(stage.extracted) if stage.extracted is not None else 0,
         "artifacts": artifacts,
     }
+    if stage.fallback_attempt is not None:
+        entry.update(
+            {
+                "primary_tool": stage.primary_tool,
+                "primary_failure_kind": stage.primary_failure_kind,
+                "fallback_tool": stage.tool,
+                "fallback_reason": stage.fallback_reason,
+                "fallback_attempt": stage.fallback_attempt,
+            }
+        )
+    return entry
 
 
 def _stage_metrics(stage: StageSummary) -> dict[str, Any]:

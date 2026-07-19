@@ -40,6 +40,7 @@ Keep the files distinct:
 - `cli_router/failures.py`: external-tool failure classification and user-facing messages.
 - `cli_router/artifacts.py`: run directory and artifact persistence.
 - `cli_router/tools.py`: `tools list` and `tools test`.
+- `cli_router/receipts.py`: schema-versioned JSON receipts for automation-facing CLI output.
 - `cli_router/presets/`: packaged YAML defaults/presets.
 - `examples/`: user-facing example configs.
 - `tests/`: pytest coverage using fake subprocess CLIs, not real Claude/Codex calls.
@@ -101,13 +102,16 @@ Config lookup order is:
 4. `~/.config/cli-router/config.yaml`
 5. Built-in defaults from `cli_router/presets/generic.yaml`
 
-Config version is currently `version: 1`.
+Config version is currently `version: 2`; legacy `version: 1` remains supported. Version 2 requires `requires_cli_router`, which gives older routers a hard failure on the schema version rather than letting them ignore an unknown compatibility key.
 
 Supported placeholders are literal token replacements:
 
 - `{prompt}`
 - `{user_prompt}`
 - `{plan_path}`
+- `{previous_output}`
+- `{all_stage_outputs}`
+- `{target_root}`
 
 Do not switch to Python `str.format` semantics without a strong reason. Current literal replacement intentionally allows command snippets and prompts to contain unrelated braces.
 
@@ -115,7 +119,8 @@ Workflow stages use:
 
 - `id`: unique stage id within the workflow. The list order is the default execution order.
 - `tool`: primary tool name.
-- `fallback_tools`: optional ordered list of tool names to try after failed attempts.
+- `fallback_tools`: optional ordered list of tool names or `{tool, on}` policy mappings. Fallback is fail-closed: only `auth_required`, `usage_limit`, `timeout`, and `transport_failure` may be named, and legacy string entries use that same safe operational set.
+- `max_fallback_attempts`: optional nonnegative cap on fallback attempts. Fallback must never run after semantic/generic command failures, `unsupported_model`, `extraction_failed`, or configuration errors.
 - `enabled`: optional boolean; `false` skips the stage in default `run` and `implement`, while explicit `--stages` can still select it.
 - `input_template`: rendered prompt sent as `{prompt}` to the tool command.
 - `output_file`: planner output path, usually `PLAN.md`.
@@ -141,6 +146,16 @@ Tool config supports:
 - `output.extract`: top-level or dotted JSON field path.
 - `timeout_seconds`: optional positive number; timeout returns exit code `124`.
 - `provider`, `model`, and `effort`: optional TUI metadata for Model Config display/editing. These do not replace `command`.
+- `cwd`: optional working directory with literal placeholder replacement; workflows expose `{target_root}` as the router invocation directory.
+- `environment_mode`: `inherit` (default) or `allowlist`; allowlist mode starts with only names in `environment_allowlist`.
+- `environment`: string mapping applied after the inherited/allowlisted base; values support literal placeholders.
+- `environment_unset`: environment names removed after overrides.
+- `stdin`: `inherit` (default) or `closed`.
+- `redact_environment_values`: environment names whose nonempty values are replaced in captured/streamed output and recorded commands before artifact persistence. Without this explicit setting, preserve raw stdout/stderr.
+
+Top-level `requires_cli_router` accepts a PEP 440 specifier such as `">=0.3.1,<0.4.0"`. It is mandatory for config version 2. All config-loading commands must fail before execution when the running version is incompatible.
+
+Stable machine-readable output uses a single JSON object with `schema_version: 1`. `--json` is supported for `--version`, `check`, `plan`, `run`, `implement`, and `tools test`; preserve existing field names and semantics when extending the receipt schema.
 
 Diagnostic defaults support:
 
@@ -193,7 +208,7 @@ Fallback attempts include the tool name:
 - `planner.codex-planner.stderr`
 - `planner.codex-planner.extracted.md`
 
-Every run writes `run.yaml` containing stage summaries, commands, return codes, extracted output, `failure_kind`, workflow start/finish timestamps, total duration, and per-stage duration metrics.
+Every run writes `run.yaml` containing stage summaries, commands, return codes, extracted output, `failure_kind`, workflow start/finish timestamps, total duration, and per-stage duration metrics. Fallback attempt records also contain `primary_tool`, `primary_failure_kind`, `fallback_tool`, `fallback_reason`, and `fallback_attempt`.
 
 Persistent diagnostics write under `~/.cli-router/logs/` by default:
 
@@ -215,6 +230,8 @@ Current `failure_kind` values include:
 - `command_not_found`
 - `command_failed`
 - `extraction_failed`
+- `transport_failure`
+- `configuration_error`
 
 Known real-world messages are covered by tests, including:
 
@@ -279,7 +296,7 @@ These observations are environment-specific. Do not hardcode them into package d
 ## Design Constraints
 
 - Keep the CLI stable: `cli-router run`, `plan`, `implement`, `check`, `config show`, `tools list`, `tools test <name>`.
-- Keep dependencies minimal. Current runtime dependencies are `pyyaml` and `rich`; the CLI uses `argparse`. This is why the TUI remains Rich-based instead of adopting Textual without an explicit product decision.
+- Keep dependencies minimal. Current runtime dependencies are `packaging`, `pyyaml`, and `rich`; the CLI uses `argparse`. This is why the TUI remains Rich-based instead of adopting Textual without an explicit product decision.
 - Prefer list-form subprocess commands in examples and tests.
 - Preserve stdout/stderr exactly in artifacts. Do not redact or transform raw logs unless a user explicitly requests a privacy feature.
 - Avoid hidden behavior. If CLI-Router retries or falls back, make that visible through summaries and `run.yaml`.

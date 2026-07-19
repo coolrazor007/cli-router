@@ -26,6 +26,8 @@ python -m pip install -e .
 
 ```bash
 cli-router --help
+cli-router --version
+cli-router --version --json
 cli-router
 cli-router tui
 cli-router plan "Add a health check endpoint"
@@ -34,9 +36,11 @@ cli-router run "Add a health check endpoint" --stages planner,review,coder
 cli-router implement
 cli-router implement --stages coder,review
 cli-router check
+cli-router check --json
 cli-router config show
 cli-router tools list
 cli-router tools test claude-planner
+cli-router tools test claude-planner --json
 cli-router runs
 cli-router runs show 2026-07-07T14-22-10
 ```
@@ -95,10 +99,18 @@ CLI-Router looks for config in this order:
 
 The TUI persists first-run setup and TUI edits to `~/.cli-router/config.yaml`. Project-local config files still take precedence when present.
 
+Project configs can require a compatible CLI-Router release with a PEP 440 version range. Every command, including `check`, fails before execution when the running package is outside the range. Use config `version: 2` with this declaration for a hard compatibility boundary: pre-feature routers reject the schema version instead of ignoring an unknown top-level key.
+
+```yaml
+version: 2
+requires_cli_router: ">=0.3.1,<0.4.0"
+```
+
 Minimal example:
 
 ```yaml
-version: 1
+version: 2
+requires_cli_router: ">=0.3.1,<0.4.0"
 
 defaults:
   plan_file: PLAN.md
@@ -123,6 +135,43 @@ tools:
     output:
       format: json
       extract: result
+
+  grok-reviewer:
+    type: grok
+    cwd: "{target_root}"
+    environment_mode: allowlist
+    environment_allowlist:
+      - HOME
+      - USER
+      - LOGNAME
+      - PATH
+      - GROK_HOME
+    environment:
+      TERM: dumb
+    environment_unset:
+      - GITHUB_TOKEN
+      - SSH_AUTH_SOCK
+    stdin: closed
+    redact_environment_values:
+      - GROK_TOKEN
+    command:
+      - grok
+      - --single
+      - "{prompt}"
+    output:
+      format: text
+
+  codex-planner:
+    type: codex
+    timeout_seconds: 120
+    command:
+      - codex
+      - --ask-for-approval
+      - never
+      - exec
+      - "{prompt}"
+    output:
+      format: text
 
   codex-coder:
     type: codex
@@ -186,7 +235,13 @@ workflows:
       - id: planner
         tool: claude-planner
         fallback_tools:
-          - codex-planner
+          - tool: codex-planner
+            on:
+              - auth_required
+              - usage_limit
+              - timeout
+              - transport_failure
+        max_fallback_attempts: 1
         input_template: |
           You are the planning model for a coding-agent handoff.
 
@@ -216,7 +271,7 @@ workflows:
           {user_prompt}
 ```
 
-Command args and templates support `{prompt}`, `{user_prompt}`, and `{plan_path}` placeholders.
+Command args, `cwd`, and configured environment values use literal placeholder replacement. Supported runtime placeholders include `{prompt}`, `{user_prompt}`, `{plan_path}`, `{previous_output}`, `{all_stage_outputs}`, and `{target_root}`. `{target_root}` is the directory from which CLI-Router was invoked.
 
 Workflow stages are modular:
 
@@ -237,7 +292,33 @@ Workflow stages are modular:
 - A stage with `output_file` writes its extracted output to that file.
 - A stage with `updates_plan: true` makes later `{plan_path}` placeholders point to its `output_file`.
 
-When a stage command fails, CLI-Router records stdout/stderr and classifies common failures. Usage-limit messages such as provider quota, rate-limit, or 429 errors are reported as usage-limit failures. Authentication failures such as provider login errors are reported as `auth_required` and include the provider's first error line. Commands can set `timeout_seconds`; timed-out commands are recorded with exit code `124`. A stage can define `fallback_tools` to try alternate configured tools in order after a failed primary tool.
+When a stage command fails, CLI-Router records stdout/stderr and classifies common failures. Usage-limit messages such as provider quota, rate-limit, or 429 errors are reported as usage-limit failures. Authentication failures such as provider login errors are reported as `auth_required` and include the provider's first error line. Network/connection errors are classified as `transport_failure`. Commands can set `timeout_seconds`; timed-out commands are recorded with exit code `124`.
+
+Fallback is fail-closed and only available for the operational failure kinds `auth_required`, `usage_limit`, `timeout`, and `transport_failure`. A structured fallback selects the allowed kinds with `on`; `max_fallback_attempts` caps how many alternates may run. Legacy string entries remain supported as shorthand for the full safe operational set. CLI-Router never falls back after generic command/semantic failures, unsupported-model configuration, malformed structured output (`extraction_failed`), or runtime configuration errors. Successful extracted verdicts such as `FAIL`, `PASS_WITH_WARNINGS`, or `INCONCLUSIVE` are final stage output and do not trigger fallback.
+
+Each fallback attempt records `primary_tool`, `primary_failure_kind`, `fallback_tool`, `fallback_reason: allowed_failure_kind`, and the one-based `fallback_attempt` in `run.yaml`.
+
+Tool execution inherits the router process environment and stdin by default for backward compatibility. `environment_mode: allowlist` starts from only `environment_allowlist`; `environment` then adds or overrides values, and `environment_unset` removes named values. `stdin: closed` connects the child to the null device. `redact_environment_values` names environment variables whose nonempty values are replaced in captured stdout, stderr, streamed output, and the recorded command before artifacts are written. This is an explicit privacy mode: without it, raw output remains unchanged.
+
+## Machine-readable output
+
+`--json` is supported by `--version`, `check`, `plan`, `run`, `implement`, and `tools test` (place it after the subcommand for command-specific use). Each invocation prints exactly one JSON object with `schema_version: 1`. The stable envelope includes:
+
+- CLI-Router version and command.
+- Config source and SHA-256 checksum (source-file bytes, or the canonical built-in config).
+- Workflow, run ID/directory, duration, exit code, overall outcome, and error.
+- Whether fallback was used and why.
+- Per-attempt stage, tool, provider/model, attempt number, exit code, failure kind, duration, fallback provenance, and artifact paths.
+
+Examples:
+
+```bash
+cli-router --version --json
+cli-router check --json
+cli-router tools test grok-reviewer --json
+cli-router run "Review this target" --json
+cli-router implement --json
+```
 
 ## Artifacts
 

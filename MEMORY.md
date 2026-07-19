@@ -39,3 +39,13 @@ This file preserves durable, high-signal lessons for maintainers and coding agen
 - Use a temporary virtual environment, install `-e ".[dev]"`, and run tests, Ruff, mypy, coverage, CLI smoke checks, release identity, build, and Twine there.
 - Build release artifacts in a fresh temporary output directory to avoid confusing stale `dist/` files with the current release.
 - Network isolation can prevent build dependencies from resolving. Treat dependency-download failures separately from code failures and rerun with the environment's approved network mechanism.
+
+## PyYAML Treats `on` as a YAML 1.1 Boolean
+
+- PyYAML's safe loader parses an unquoted `on:` mapping key as boolean `true`, even though users naturally write conditional fallback policies with `on:`.
+- CLI-Router normalizes boolean `true` back to the documented `on` key inside fallback policy mappings before validation. Preserve this normalization unless the entire loader is deliberately migrated to YAML 1.2 semantics.
+
+## Compatibility Keys Need a Schema Bootstrap
+
+- A router released before `requires_cli_router` existed can ignore that unknown top-level key, so the key alone cannot protect a safety-sensitive config from old binaries.
+- Config version 2 is the bootstrap boundary: old routers that only accept version 1 fail immediately, while new routers require and evaluate `requires_cli_router`. Keep legacy version 1 support, including treating configs with no explicit version as v1.

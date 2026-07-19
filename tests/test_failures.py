@@ -53,3 +53,15 @@ def test_classifies_auth_required_from_provider_output():
     assert classify_failure(result) == "auth_required"
     assert "authentication" in stage_failure_message("planner", result).lower()
     assert "Not logged in" in stage_failure_message("planner", result)
+
+
+def test_classifies_transport_failure_from_provider_output():
+    result = ToolRunResult(["grok"], 1, "", "connection reset by peer")
+
+    assert classify_failure(result) == "transport_failure"
+
+
+def test_classifies_invalid_runtime_policy_as_configuration_error():
+    result = ToolRunResult(["tool"], 2, "", "Configuration error: cwd does not exist")
+
+    assert classify_failure(result) == "configuration_error"
