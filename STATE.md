@@ -6,11 +6,11 @@ This file records the current known state for maintainers and coding agents. Ver
 
 ## Current Release
 
-- Current published package version: `0.3.1`. Draft PR #8 prepares package and runtime identity `0.3.2`; it is not yet merged, tagged, released, or published.
-- Annotated tag `v0.3.1` points to release commit `a37b4960dd7467f19bdb767502c13dcdc522326f`, which was the verified `main` and `origin/main` tip when 0.3.1 was published.
-- GitHub Release: <https://github.com/coolrazor007/cli-router/releases/tag/v0.3.1>
-- PyPI package: `cli-router==0.3.1`, independently installed from the public PyPI index and verified to report metadata and runtime version `0.3.1`.
-- The `Unreleased` changelog section is empty after the 0.3.1 release; draft PR #8 stages its accepted changes under a dated 0.3.2 release section.
+- Current published package version: `0.3.2`; package and runtime identity both report `0.3.2`.
+- Annotated tag `v0.3.2` points to release commit `f09adecf79201db5eda4433d6d87683eff8ccfdb`, which was the verified `main` and `origin/main` tip when 0.3.2 was published.
+- GitHub Release: <https://github.com/coolrazor007/cli-router/releases/tag/v0.3.2>
+- PyPI package: `cli-router==0.3.2`, independently installed with cache disabled from the public PyPI index and verified to report metadata and runtime version `0.3.2`.
+- The `Unreleased` changelog section is empty after the 0.3.2 release; the released changes are under the dated 0.3.2 section.
 - Issue #1, the empty-stage false green, is closed as completed and represented in the 0.3.1 changelog.
 
 ## Repository and CI
@@ -19,13 +19,13 @@ This file records the current known state for maintainers and coding agents. Ver
 - `main` is protected and rejects direct pushes. Changes must be merged by pull request.
 - Required pull-request jobs currently comprise Python 3.10, 3.11, 3.12, 3.13, and 3.14 tests plus `Quality and package`.
 - The quality job runs Ruff, mypy, actionlint, branch-aware coverage with an 80% floor, package build, and Twine checks.
-- The 0.3.1 release PR was #6 and all six required jobs passed before merge.
+- The 0.3.2 release PR was #8 and all six required jobs passed before merge.
 
 ## Publishing
 
 - `.github/workflows/publish.yml` is triggered by a published GitHub Release, not by a tag push alone.
 - The publish workflow reruns the Python 3.10-3.14 test matrix and release-identity validation, builds and checks the distributions, and publishes through PyPI trusted publishing using GitHub OIDC.
-- The successful 0.3.1 publish run is <https://github.com/coolrazor007/cli-router/actions/runs/29706059649>.
+- The successful 0.3.2 publish run is <https://github.com/coolrazor007/cli-router/actions/runs/29708635356>.
 - Normal releases do not require a local PyPI API token or a manual `twine upload`.
 
 ## Local Environment
@@ -38,18 +38,18 @@ This file records the current known state for maintainers and coding agents. Ver
 
 ## Verification Baseline
 
-The 0.3.1 release was verified with:
+The 0.3.2 release was verified with:
 
-- 185 tests passing locally.
+- 235 tests passing locally.
 - Ruff passing.
-- mypy passing for 22 source files.
-- Branch-aware coverage meeting the configured 80% floor.
-- CLI help and `cli-router check` smoke tests passing.
-- Release identity validation passing for `v0.3.1`.
+- mypy passing for 23 source files.
+- Branch-aware coverage at 82%, meeting the configured 80% floor.
+- CLI help, JSON output, and `cli-router check` smoke tests passing.
+- Release identity validation passing for `v0.3.2`.
 - Wheel and source distribution build and Twine checks passing.
 - A built-wheel installation smoke test passing.
-- A separate clean installation of `cli-router==0.3.1` from public PyPI reporting metadata and runtime version `0.3.1`, with `cli-router check` returning `Configuration OK`.
+- A separate clean, cache-free installation of `cli-router==0.3.2` from public PyPI reporting metadata and runtime version `0.3.2`, with JSON version output succeeding and `cli-router check` returning `Configuration OK`.
 
 ## Known Blockers
 
-- No known blocker remains for the 0.3.1 release.
+- No known blocker remains for the 0.3.2 release.
