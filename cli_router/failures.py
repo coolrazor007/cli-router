@@ -31,11 +31,34 @@ AUTH_REQUIRED_PATTERNS = (
     "unauthorized",
 )
 
+TRANSPORT_FAILURE_PATTERNS = (
+    "connection refused",
+    "connection reset",
+    "connection aborted",
+    "network is unreachable",
+    "temporary failure in name resolution",
+    "name or service not known",
+    "could not resolve host",
+    "tls handshake",
+    "transport error",
+)
+
+FALLBACK_SAFE_FAILURE_KINDS = frozenset(
+    {
+        "auth_required",
+        "usage_limit",
+        "timeout",
+        "transport_failure",
+    }
+)
+
 
 def classify_failure(result: ToolRunResult) -> str | None:
     if result.returncode == 0:
         return None
     combined = f"{result.stdout}\n{result.stderr}".lower()
+    if "configuration error:" in combined:
+        return "configuration_error"
     if result.returncode == 124 or "timed out" in combined:
         return "timeout"
     if any(pattern in combined for pattern in USAGE_LIMIT_PATTERNS):
@@ -44,6 +67,8 @@ def classify_failure(result: ToolRunResult) -> str | None:
         return "unsupported_model"
     if any(pattern in combined for pattern in AUTH_REQUIRED_PATTERNS):
         return "auth_required"
+    if any(pattern in combined for pattern in TRANSPORT_FAILURE_PATTERNS):
+        return "transport_failure"
     if result.returncode == 127:
         return "command_not_found"
     return "command_failed"
@@ -67,6 +92,8 @@ def stage_failure_message(
             f"Stage {stage_id!r} failed because provider authentication is required",
             result,
         )
+    if failure_kind == "transport_failure":
+        return _with_provider_message(f"Stage {stage_id!r} failed because of a transport error", result)
     return _with_provider_message(f"Stage {stage_id!r} failed with exit code {result.returncode}", result)
 
 

@@ -218,3 +218,120 @@ def test_stream_tool_does_not_timeout_after_process_exits_while_draining_output(
     assert "timed out" not in result.stderr.lower()
     assert lines == [f"line-{index}\n" for index in range(5)]
     assert result.stdout == "".join(lines)
+
+
+def test_runner_renders_configured_cwd(tmp_path):
+    target_root = tmp_path / "target"
+    working_dir = target_root / "review"
+    working_dir.mkdir(parents=True)
+
+    result = run_tool(
+        {
+            "command": [sys.executable, "-c", "import os; print(os.getcwd())"],
+            "cwd": "{target_root}/review",
+        },
+        {"target_root": str(target_root)},
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == str(working_dir)
+
+
+def test_runner_applies_environment_allowlist_overrides_and_unset(monkeypatch):
+    monkeypatch.setenv("CLI_ROUTER_KEEP", "kept")
+    monkeypatch.setenv("CLI_ROUTER_REMOVE", "remove-me")
+    monkeypatch.setenv("CLI_ROUTER_HIDDEN", "must-not-leak")
+    code = (
+        "import json, os; "
+        "print(json.dumps({key: os.environ.get(key) for key in "
+        "['CLI_ROUTER_KEEP', 'CLI_ROUTER_REMOVE', 'CLI_ROUTER_HIDDEN', 'TERM', 'TARGET']}))"
+    )
+
+    result = run_tool(
+        {
+            "command": [sys.executable, "-c", code],
+            "environment_mode": "allowlist",
+            "environment_allowlist": ["CLI_ROUTER_KEEP", "CLI_ROUTER_REMOVE"],
+            "environment": {"TERM": "dumb", "TARGET": "{target_root}"},
+            "environment_unset": ["CLI_ROUTER_REMOVE"],
+        },
+        {"target_root": "/safe/target"},
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == (
+        '{"CLI_ROUTER_KEEP": "kept", "CLI_ROUTER_REMOVE": null, '
+        '"CLI_ROUTER_HIDDEN": null, "TERM": "dumb", "TARGET": "/safe/target"}'
+    )
+
+
+@pytest.mark.parametrize("runner", [run_tool, stream_tool])
+def test_runner_closes_stdin_when_configured(runner):
+    result = runner(
+        {
+            "command": [sys.executable, "-c", "import sys; print(len(sys.stdin.read()))"],
+            "stdin": "closed",
+        },
+        {},
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "0\n"
+
+
+def test_runner_redacts_environment_values_from_result_and_command(monkeypatch):
+    secret = "router-secret-value"
+    monkeypatch.setenv("CLI_ROUTER_SECRET", secret)
+    code = (
+        "import os, sys; "
+        "print(sys.argv[1]); print(os.environ['CLI_ROUTER_SECRET']); "
+        "print(os.environ['CLI_ROUTER_SECRET'], file=sys.stderr)"
+    )
+
+    result = run_tool(
+        {
+            "command": [sys.executable, "-c", code, "{secret_argument}"],
+            "environment_mode": "allowlist",
+            "environment_allowlist": ["CLI_ROUTER_SECRET"],
+            "redact_environment_values": ["CLI_ROUTER_SECRET"],
+        },
+        {"secret_argument": secret},
+    )
+
+    assert secret not in " ".join(result.command)
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+    assert result.command[-1] == "[REDACTED:CLI_ROUTER_SECRET]"
+    assert result.stdout == "[REDACTED:CLI_ROUTER_SECRET]\n[REDACTED:CLI_ROUTER_SECRET]\n"
+    assert result.stderr == "[REDACTED:CLI_ROUTER_SECRET]\n"
+
+
+def test_stream_runner_redacts_values_before_callbacks(monkeypatch):
+    secret = "stream-secret-value"
+    monkeypatch.setenv("CLI_ROUTER_SECRET", secret)
+    lines = []
+
+    result = stream_tool(
+        {
+            "command": [sys.executable, "-c", "import os; print(os.environ['CLI_ROUTER_SECRET'])"],
+            "redact_environment_values": ["CLI_ROUTER_SECRET"],
+        },
+        {},
+        on_stdout_line=lines.append,
+    )
+
+    assert result.stdout == "[REDACTED:CLI_ROUTER_SECRET]\n"
+    assert lines == ["[REDACTED:CLI_ROUTER_SECRET]\n"]
+
+
+def test_runner_reports_missing_configured_cwd_as_configuration_error(tmp_path):
+    result = run_tool(
+        {
+            "command": [sys.executable, "-c", "print('should not run')"],
+            "cwd": str(tmp_path / "missing"),
+        },
+        {},
+    )
+
+    assert result.returncode == 2
+    assert "configuration error" in result.stderr.lower()

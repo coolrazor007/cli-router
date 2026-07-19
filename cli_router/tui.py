@@ -19,7 +19,13 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
-from .config import RouterConfig, save_config, user_config_path
+from .config import (
+    CURRENT_CLI_ROUTER_REQUIREMENT,
+    CURRENT_CONFIG_VERSION,
+    RouterConfig,
+    save_config,
+    user_config_path,
+)
 from .modelcache import ModelCache
 from .models import PROVIDERS, _provider_command, model_options_for_provider, provider_tool_config
 from .streamfmt import OutputCondenser, condense_extracted, first_meaningful_line, strip_ansi
@@ -638,7 +644,8 @@ def _configure_first_run(config: RouterConfig, providers: list[str]) -> None:
     config.data.clear()
     config.data.update(
         {
-            "version": 1,
+            "version": CURRENT_CONFIG_VERSION,
+            "requires_cli_router": CURRENT_CLI_ROUTER_REQUIREMENT,
             "defaults": {
                 "plan_file": "PLAN.md",
                 "run_dir": ".cli-router/runs",
