@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.1 - 2026-07-19
+
 - Made workflow outcomes fail closed: `run` and `implement` now reject empty resolved stage lists, and `stop_on_failure: false` preserves the first failed stage as the overall result even when later stages succeed.
 - Terminate the full subprocess process group on command timeout so provider helper processes do not survive an exit `124`.
 - Restored home-config-only TUI persistence; project-local and explicit configuration files are no longer silently rewritten.
